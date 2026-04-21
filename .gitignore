@@ -1,1 +1,4 @@
 output/
+outputs/
+*_output/
+*_outputs/
