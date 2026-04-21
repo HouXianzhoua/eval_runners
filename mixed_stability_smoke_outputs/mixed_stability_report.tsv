@@ -1,0 +1,10 @@
+scope	metric	value_1	value_2	value_3
+combined	长周期	0h01m43s	540	100.00%
+combined	TTFT 衰减	0.11s	0.12s	4.84%
+combined	TPS 衰减	184.4314	184.6736	-0.13%
+text_lane	长周期	0h01m42s	360	100.00%
+text_lane	TTFT 衰减	0.12s	0.13s	4.35%
+text_lane	TPS 衰减	125.4361	125.4361	0.00%
+vl_lane	长周期	0h01m43s	180	100.00%
+vl_lane	TTFT 衰减	0.08s	0.09s	6.31%
+vl_lane	TPS 衰减	60.7080	60.9516	-0.40%

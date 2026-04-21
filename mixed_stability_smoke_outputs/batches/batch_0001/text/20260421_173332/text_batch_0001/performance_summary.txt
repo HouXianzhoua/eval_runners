@@ -1,0 +1,39 @@
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Performance Test Summary Report                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Basic Information:
+┌───────────────────────┬──────────────────────────────────────────────────────┐
+│ Model                 │ Qwen3-VL-30B-A3B-Instruct                            │
+│ Test Dataset          │ random                                               │
+│ API Type              │ openai                                               │
+│ Total Generated       │ 1,280.0 tokens                                       │
+│ Avg Output Rate       │ 531.80 tokens/sec                                    │
+│ Total Test Time       │ 2.41 seconds                                         │
+│ Output Path           │ /home/houxianzhou/vlm_eval_workspace/eval_runners/m… │
+└───────────────────────┴──────────────────────────────────────────────────────┘
+
+
+                                    Detailed Performance Metrics                                    
+┏━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃      ┃      ┃       ┃     Avg ┃     P99 ┃     Avg ┃    P99 ┃     Avg ┃    P99 ┃    Gen. ┃ Success┃
+┃Conc. ┃ Rate ┃   RPS ┃ Lat.(s) ┃ Lat.(s) ┃ TTFT(s) ┃ TTFT(… ┃ TPOT(s) ┃ TPOT(… ┃  toks/s ┃    Rate┃
+┡━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│    6 │  INF │ 16.62 │   0.347 │   0.397 │   0.105 │  0.153 │   0.008 │  0.010 │  531.79 │  100.0%│
+└──────┴──────┴───────┴─────────┴─────────┴─────────┴────────┴─────────┴────────┴─────────┴────────┘
+
+
+                              Request Metrics                               
+┏━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃Conc. ┃ Num Reqs ┃ Avg In Toks ┃ P99 In Toks ┃ Avg Out Toks ┃ P99 Out Toks┃
+┡━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│    6 │       40 │       370.9 │       507.0 │         32.0 │         32.0│
+└──────┴──────────┴─────────────┴─────────────┴──────────────┴─────────────┘
+
+
+               Best Performance Configuration               
+ Highest RPS         Concurrency 6 (16.62 req/sec)          
+ Lowest Latency      Concurrency 6 (0.347 seconds)          
+
+Performance Recommendations:
+• The system seems not to have reached its performance bottleneck, try higher concurrency

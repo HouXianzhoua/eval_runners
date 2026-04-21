@@ -1,0 +1,200 @@
+2026-04-21 17:34:39 - evalscope - INFO: Starting benchmark with args: 
+2026-04-21 17:34:39 - evalscope - INFO: {
+    "model": "Qwen3-VL-30B-A3B-Instruct",
+    "model_id": "Qwen3-VL-30B-A3B-Instruct",
+    "attn_implementation": null,
+    "api": "openai",
+    "tokenizer_path": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "port": 8877,
+    "url": "http://120.48.75.178:4842/v1/chat/completions",
+    "headers": {},
+    "connect_timeout": null,
+    "read_timeout": null,
+    "total_timeout": 21600,
+    "api_key": "",
+    "no_test_connection": false,
+    "number": 40,
+    "parallel": 6,
+    "rate": -1,
+    "sleep_interval": 5,
+    "sla_auto_tune": false,
+    "sla_variable": "parallel",
+    "sla_params": null,
+    "sla_num_runs": 3,
+    "sla_upper_bound": 65536,
+    "sla_lower_bound": 1,
+    "sla_fixed_parallel": null,
+    "sla_number_multiplier": null,
+    "db_commit_interval": 1000,
+    "queue_size_multiplier": 5,
+    "in_flight_task_multiplier": 2,
+    "log_every_n_query": 10,
+    "debug": false,
+    "enable_progress_tracker": false,
+    "visualizer": null,
+    "wandb_api_key": null,
+    "swanlab_api_key": null,
+    "name": "text_batch_0006",
+    "outputs_dir": "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006",
+    "no_timestamp": false,
+    "max_prompt_length": 512,
+    "min_prompt_length": 256,
+    "prefix_length": 0,
+    "prompt": null,
+    "query_template": null,
+    "apply_chat_template": true,
+    "image_width": 224,
+    "image_height": 224,
+    "image_format": "RGB",
+    "image_num": 1,
+    "image_patch_size": 28,
+    "dataset": "random",
+    "dataset_path": null,
+    "frequency_penalty": null,
+    "repetition_penalty": null,
+    "logprobs": null,
+    "max_tokens": 32,
+    "min_tokens": null,
+    "n_choices": null,
+    "seed": null,
+    "stop": null,
+    "stop_token_ids": null,
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": null,
+    "top_k": null,
+    "extra_args": {},
+    "tokenize_prompt": false,
+    "multi_turn": false,
+    "min_turns": 1,
+    "max_turns": null
+}
+2026-04-21 17:34:42 - evalscope - INFO: Test connection successful.
+2026-04-21 17:34:44 - evalscope - INFO: Using 151655 allowed tokens out of 151669 total tokens (excluded 14 special/byte-fallback tokens)
+2026-04-21 17:34:44 - evalscope - INFO: Sampling input lengths from [254, 511)
+2026-04-21 17:34:45 - evalscope - INFO: Generating[requests] 100%| 40/40 [Elapsed: 00:00 < Remaining: 00:00, 39.18it/s]
+2026-04-21 17:34:45 - evalscope - INFO: Save the data base to: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006/parallel_6_number_40/benchmark_data.db
+2026-04-21 17:34:45 - evalscope - INFO: {
+  "Time taken for tests (s)": 0.6759,
+  "Number of concurrency": 6,
+  "Request rate (req/s)": -1,
+  "Total requests": 10,
+  "Succeed requests": 10,
+  "Failed requests": 0,
+  "Request throughput (req/s)": 14.7946,
+  "Average latency (s)": 0.333,
+  "Average input tokens per request": 392.4,
+  "Output token throughput (tok/s)": 473.4287,
+  "Total token throughput (tok/s)": 6278.8485,
+  "Average time to first token (s)": 0.1131,
+  "Average time per output token (s)": 0.0071,
+  "Average inter-token latency (s)": 0.007,
+  "Average output tokens per request": 32.0
+}
+2026-04-21 17:34:46 - evalscope - INFO: {
+  "Time taken for tests (s)": 1.3792,
+  "Number of concurrency": 6,
+  "Request rate (req/s)": -1,
+  "Total requests": 20,
+  "Succeed requests": 20,
+  "Failed requests": 0,
+  "Request throughput (req/s)": 14.5006,
+  "Average latency (s)": 0.3433,
+  "Average input tokens per request": 389.55,
+  "Output token throughput (tok/s)": 464.0205,
+  "Total token throughput (tok/s)": 6112.7445,
+  "Average time to first token (s)": 0.1065,
+  "Average time per output token (s)": 0.0076,
+  "Average inter-token latency (s)": 0.0075,
+  "Average output tokens per request": 32.0
+}
+2026-04-21 17:34:46 - evalscope - INFO: {
+  "Time taken for tests (s)": 1.7689,
+  "Number of concurrency": 6,
+  "Request rate (req/s)": -1,
+  "Total requests": 30,
+  "Succeed requests": 30,
+  "Failed requests": 0,
+  "Request throughput (req/s)": 16.9594,
+  "Average latency (s)": 0.3486,
+  "Average input tokens per request": 386.3,
+  "Output token throughput (tok/s)": 542.7021,
+  "Total token throughput (tok/s)": 7094.1334,
+  "Average time to first token (s)": 0.1072,
+  "Average time per output token (s)": 0.0078,
+  "Average inter-token latency (s)": 0.0076,
+  "Average output tokens per request": 32.0
+}
+2026-04-21 17:34:49 - evalscope - INFO: {
+  "Time taken for tests (s)": 2.4613,
+  "Number of concurrency": 6,
+  "Request rate (req/s)": -1,
+  "Total requests": 40,
+  "Succeed requests": 40,
+  "Failed requests": 0,
+  "Request throughput (req/s)": 16.2516,
+  "Average latency (s)": 0.3514,
+  "Average input tokens per request": 389.625,
+  "Output token throughput (tok/s)": 520.0501,
+  "Total token throughput (tok/s)": 6852.0665,
+  "Average time to first token (s)": 0.1036,
+  "Average time per output token (s)": 0.008,
+  "Average inter-token latency (s)": 0.0078,
+  "Average output tokens per request": 32.0
+}
+2026-04-21 17:34:49 - evalscope - INFO: Processing[parallel_6_number_40] 100%| 40/40 [Elapsed: 00:04 < Remaining: 00:00,  6.13it/s]
+2026-04-21 17:34:49 - evalscope - INFO: 
+Benchmarking summary:
++-----------------------------------+-----------+
+| Key                               |     Value |
++===================================+===========+
+| Time taken for tests (s)          |    2.4613 |
++-----------------------------------+-----------+
+| Number of concurrency             |    6      |
++-----------------------------------+-----------+
+| Request rate (req/s)              |   -1      |
++-----------------------------------+-----------+
+| Total requests                    |   40      |
++-----------------------------------+-----------+
+| Succeed requests                  |   40      |
++-----------------------------------+-----------+
+| Failed requests                   |    0      |
++-----------------------------------+-----------+
+| Request throughput (req/s)        |   16.2516 |
++-----------------------------------+-----------+
+| Average latency (s)               |    0.3514 |
++-----------------------------------+-----------+
+| Average input tokens per request  |  389.625  |
++-----------------------------------+-----------+
+| Output token throughput (tok/s)   |  520.05   |
++-----------------------------------+-----------+
+| Total token throughput (tok/s)    | 6852.07   |
++-----------------------------------+-----------+
+| Average time to first token (s)   |    0.1036 |
++-----------------------------------+-----------+
+| Average time per output token (s) |    0.008  |
++-----------------------------------+-----------+
+| Average inter-token latency (s)   |    0.0078 |
++-----------------------------------+-----------+
+| Average output tokens per request |   32      |
++-----------------------------------+-----------+
+2026-04-21 17:34:49 - evalscope - INFO: 
+Percentile results:
++-------------+----------+---------+----------+-------------+--------------+---------------+----------------+---------------+
+| Percentiles | TTFT (s) | ITL (s) | TPOT (s) | Latency (s) | Input tokens | Output tokens | Output (tok/s) | Total (tok/s) |
++-------------+----------+---------+----------+-------------+--------------+---------------+----------------+---------------+
+|     10%     |  0.0485  | 0.0031  |  0.0072  |   0.3256    |     307      |      32       |    83.8103     |   974.1435    |
+|     25%     |  0.0895  |  0.005  |  0.0076  |   0.3429    |     347      |      32       |    87.9351     |   1043.3382   |
+|     50%     |  0.1098  | 0.0059  |  0.0078  |   0.3521    |     384      |      32       |    91.3042     |   1190.8938   |
+|     66%     |  0.1145  | 0.0063  |  0.0079  |   0.3588    |     413      |      32       |    92.5395     |   1347.5972   |
+|     75%     |  0.117   | 0.0068  |  0.008   |   0.3642    |     447      |      32       |    96.1705     |   1380.0207   |
+|     80%     |  0.1175  | 0.0071  |  0.0093  |   0.3651    |     452      |      32       |    97.8513     |   1391.5176   |
+|     90%     |  0.1495  | 0.0091  |  0.0098  |   0.3858    |     488      |      32       |    99.3955     |   1511.3839   |
+|     95%     |  0.1539  | 0.0335  |  0.0101  |   0.3877    |     502      |      32       |    100.2194    |   1595.3026   |
+|     98%     |  0.1541  | 0.0379  |  0.0108  |   0.3929    |     518      |      32       |    101.2533    |   1608.4306   |
+|     99%     |  0.1541  | 0.0538  |  0.0108  |   0.3929    |     518      |      32       |    101.2533    |   1608.4306   |
++-------------+----------+---------+----------+-------------+--------------+---------------+----------------+---------------+
+2026-04-21 17:34:49 - evalscope - INFO: Save the summary to: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006/parallel_6_number_40
+2026-04-21 17:34:49 - evalscope - INFO: Running[perf] 100%| 1/1 [Elapsed: 00:09 < Remaining: 00:00,  9.95s/it]
+2026-04-21 17:34:49 - evalscope - INFO: Performance summary saved to: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006/performance_summary.txt
+2026-04-21 17:34:49 - evalscope - INFO: HTML report generated: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006/perf_report.html

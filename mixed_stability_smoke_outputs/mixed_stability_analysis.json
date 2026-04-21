@@ -1,0 +1,157 @@
+{
+  "generated_at": "2026-04-21T17:35:30",
+  "model": "Qwen3-VL-30B-A3B-Instruct",
+  "url": "http://120.48.75.178:4842/v1/chat/completions",
+  "api": "openai",
+  "target_duration_hours": 0.0333333333,
+  "analysis_window_ratio": 0.2,
+  "batch_count": 9,
+  "vl_config": {
+    "parallel": 2,
+    "number_per_batch": 20,
+    "min_prompt_length": 256,
+    "max_prompt_length": 256,
+    "output_tokens": 32,
+    "image_width": 224,
+    "image_height": 224,
+    "image_num": 1,
+    "image_format": "RGB"
+  },
+  "text_config": {
+    "parallel": 6,
+    "number_per_batch": 40,
+    "min_prompt_length": 256,
+    "max_prompt_length": 512,
+    "output_tokens": 32
+  },
+  "vl_run_dirs": [
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0001/vl/20260421_173332/vl_batch_0001",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0002/vl/20260421_173346/vl_batch_0002",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0003/vl/20260421_173359/vl_batch_0003",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0004/vl/20260421_173412/vl_batch_0004",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0005/vl/20260421_173427/vl_batch_0005",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/vl/20260421_173439/vl_batch_0006",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0007/vl/20260421_173453/vl_batch_0007",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0008/vl/20260421_173506/vl_batch_0008",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0009/vl/20260421_173518/vl_batch_0009"
+  ],
+  "text_run_dirs": [
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0001/text/20260421_173332/text_batch_0001",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0002/text/20260421_173346/text_batch_0002",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0003/text/20260421_173359/text_batch_0003",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0004/text/20260421_173412/text_batch_0004",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0005/text/20260421_173427/text_batch_0005",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0007/text/20260421_173453/text_batch_0007",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0008/text/20260421_173506/text_batch_0008",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0009/text/20260421_173518/text_batch_0009"
+  ],
+  "vl_db_paths": [
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0001/vl/20260421_173332/vl_batch_0001/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0002/vl/20260421_173346/vl_batch_0002/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0003/vl/20260421_173359/vl_batch_0003/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0004/vl/20260421_173412/vl_batch_0004/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0005/vl/20260421_173427/vl_batch_0005/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/vl/20260421_173439/vl_batch_0006/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0007/vl/20260421_173453/vl_batch_0007/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0008/vl/20260421_173506/vl_batch_0008/parallel_2_number_20/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0009/vl/20260421_173518/vl_batch_0009/parallel_2_number_20/benchmark_data.db"
+  ],
+  "text_db_paths": [
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0001/text/20260421_173332/text_batch_0001/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0002/text/20260421_173346/text_batch_0002/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0003/text/20260421_173359/text_batch_0003/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0004/text/20260421_173412/text_batch_0004/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0005/text/20260421_173427/text_batch_0005/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0006/text/20260421_173439/text_batch_0006/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0007/text/20260421_173453/text_batch_0007/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0008/text/20260421_173506/text_batch_0008/parallel_6_number_40/benchmark_data.db",
+    "/home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_stability_smoke_outputs/batches/batch_0009/text/20260421_173518/text_batch_0009/parallel_6_number_40/benchmark_data.db"
+  ],
+  "analysis": {
+    "combined": {
+      "total_requests": 540,
+      "success_requests": 540,
+      "failed_requests": 0,
+      "success_rate_percent": 100.0,
+      "analysis_start": 152813.611277293,
+      "analysis_end": 152916.793297965,
+      "analysis_duration_seconds": 103.18202067198581,
+      "analysis_window_ratio": 0.2,
+      "early_window": {
+        "begin": 152813.611277293,
+        "end": 152834.2476814274,
+        "requests": 120,
+        "avg_ttft_seconds": 0.10985348647518549,
+        "avg_tpot_seconds": 0.007146243918184148,
+        "avg_tps": 184.43135612260852
+      },
+      "late_window": {
+        "begin": 152896.1568938306,
+        "end": 152916.793297965,
+        "requests": 120,
+        "avg_ttft_seconds": 0.11516705554919705,
+        "avg_tpot_seconds": 0.0070378151104501605,
+        "avg_tps": 184.67364639602235
+      },
+      "ttft_decay_rate_percent": 4.83695988584926,
+      "tps_decay_rate_percent": -0.13137151865475433
+    },
+    "text_lane": {
+      "total_requests": 360,
+      "success_requests": 360,
+      "failed_requests": 0,
+      "success_rate_percent": 100.0,
+      "analysis_start": 152814.749322229,
+      "analysis_end": 152916.793297965,
+      "analysis_duration_seconds": 102.04397573598544,
+      "analysis_window_ratio": 0.2,
+      "early_window": {
+        "begin": 152814.749322229,
+        "end": 152835.1581173762,
+        "requests": 80,
+        "avg_ttft_seconds": 0.12410630062586278,
+        "avg_tpot_seconds": 0.007049244293575024,
+        "avg_tps": 125.43611622025891
+      },
+      "late_window": {
+        "begin": 152896.3845028178,
+        "end": 152916.793297965,
+        "requests": 80,
+        "avg_ttft_seconds": 0.1295103901738912,
+        "avg_tpot_seconds": 0.007001947606840986,
+        "avg_tps": 125.43611622025891
+      },
+      "ttft_decay_rate_percent": 4.354403862475826,
+      "tps_decay_rate_percent": 0.0
+    },
+    "vl_lane": {
+      "total_requests": 180,
+      "success_requests": 180,
+      "failed_requests": 0,
+      "success_rate_percent": 100.0,
+      "analysis_start": 152813.611277293,
+      "analysis_end": 152916.233749782,
+      "analysis_duration_seconds": 102.62247248899075,
+      "analysis_window_ratio": 0.2,
+      "early_window": {
+        "begin": 152813.611277293,
+        "end": 152834.1357717908,
+        "requests": 40,
+        "avg_ttft_seconds": 0.0813478581738309,
+        "avg_tpot_seconds": 0.007340243167402392,
+        "avg_tps": 60.70795069439183
+      },
+      "late_window": {
+        "begin": 152895.7092552842,
+        "end": 152916.233749782,
+        "requests": 40,
+        "avg_ttft_seconds": 0.08648038629980874,
+        "avg_tpot_seconds": 0.007109550117668509,
+        "avg_tps": 60.95156205351861
+      },
+      "ttft_decay_rate_percent": 6.3093586496281455,
+      "tps_decay_rate_percent": -0.4012841091492796
+    }
+  }
+}

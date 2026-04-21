@@ -1,0 +1,36 @@
+# EvalScope Mixed Perf Combined Report
+
+- Generated At: 2026-04-21 17:33:24
+- Model: Qwen3-VL-30B-A3B-Instruct
+- URL: http://120.48.75.178:4842/v1/chat/completions
+- Output Root: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_perf_smoke_outputs
+
+## 主要性能指标
+
+| 指标 | Qwen3-VL-30B-A3B-Instruct<br>纯文本 (Conc.6) | Qwen3-VL-30B-A3B-Instruct<br>图文 (Conc.2) |
+| :--- | :--- | :--- |
+| **Conc.** | 6 | 2 |
+| **RPS** | 16.32 | 6.91 |
+| **Avg Lat.(s)** | 0.349 | 0.288 |
+| **P99 Lat.(s)** | 0.384 | 0.357 |
+| **Avg TTFT(s)** | 0.129 | 0.103 |
+| **P99 TTFT(s)** | 0.206 | 0.166 |
+| **Avg TPOT(s)** | 0.007 | 0.006 |
+| **P99 TPOT(s)** | 0.010 | 0.009 |
+| **Gen. toks/s** | 522.39 | 221.13 |
+| **Success Rate** | 100.0% | 100.0% |
+
+## 请求规模
+
+| 指标 | Qwen3-VL-30B-A3B-Instruct<br>纯文本 (Conc.6) | Qwen3-VL-30B-A3B-Instruct<br>图文 (Conc.2) |
+| :--- | :--- | :--- |
+| **Num Reqs** | 40 | 20 |
+| **Avg In Toks** | 409.8 | 328.0 |
+| **P99 In Toks** | 517.0 | 328.0 |
+| **Avg Out Toks** | 32.0 | 32.0 |
+| **P99 Out Toks** | 32.0 | 32.0 |
+
+## 原始报告路径
+
+- VL: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_perf_smoke_outputs/mixed_vl_smoke_2c_20n/20260421_173310/mixed_vl_smoke_2c_20n/performance_summary.txt
+- TEXT: /home/houxianzhou/vlm_eval_workspace/eval_runners/mixed_perf_smoke_outputs/mixed_text_smoke_6c_40n/20260421_173310/mixed_text_smoke_6c_40n/performance_summary.txt
