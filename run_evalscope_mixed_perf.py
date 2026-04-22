@@ -3,7 +3,7 @@
 
 Workload default:
 - 300 multimodal requests, concurrency 2, each request uses 1000 text tokens
-  plus 1 image (720x1280), output 250 tokens.
+  plus 2 images (720x1280), output 250 tokens.
 - 600 text-only requests, concurrency 6, input length sampled uniformly from
   2000 to 10000 tokens, output 50 tokens.
 
@@ -455,7 +455,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--vl-tokenizer-path', default=None, help='Tokenizer path for random_vl generation.')
     parser.add_argument('--image-width', type=int, default=720)
     parser.add_argument('--image-height', type=int, default=1280)
-    parser.add_argument('--image-num', type=int, default=1)
+    parser.add_argument('--image-num', type=int, default=2)
     parser.add_argument('--image-format', default='RGB')
 
     parser.add_argument('--text-name', default='mixed_text_6c_600n')

@@ -41,7 +41,7 @@ def main() -> int:
         '--image-height',
         '224',
         '--image-num',
-        '1',
+        '2',
         '--text-name',
         'mixed_text_smoke_6c_40n',
         '--text-number',

@@ -41,7 +41,7 @@ def main() -> int:
         '--image-height',
         '224',
         '--image-num',
-        '1',
+        '2',
         '--text-parallel',
         '6',
         '--text-number',

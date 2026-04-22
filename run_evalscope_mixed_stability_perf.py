@@ -567,7 +567,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--evalscope-bin', default='evalscope')
     parser.add_argument('--tokenizer-path', required=True)
     parser.add_argument('--output-root', default=None)
-    parser.add_argument('--duration-minutes', type=float, default=24.0 * 60.0)
+    parser.add_argument(
+        '--duration-minutes',
+        type=float,
+        default=24.0 * 60.0,
+        help='Target benchmark duration in minutes.',
+    )
     parser.add_argument('--analysis-window-ratio', type=float, default=0.15)
 
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True)
@@ -588,7 +593,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--vl-tokenizer-path', default=None)
     parser.add_argument('--image-width', type=int, default=720)
     parser.add_argument('--image-height', type=int, default=1280)
-    parser.add_argument('--image-num', type=int, default=1)
+    parser.add_argument('--image-num', type=int, default=2)
     parser.add_argument('--image-format', default='RGB')
 
     parser.add_argument('--text-parallel', type=int, default=6)
