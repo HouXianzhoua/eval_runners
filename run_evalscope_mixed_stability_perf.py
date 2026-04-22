@@ -48,6 +48,19 @@ class RequestRecord:
     completion_tokens: int
 
 
+@dataclass
+class BatchSummary:
+    batch_index: int
+    duration_seconds: float
+    total_requests: int
+    success_requests: int
+    failed_requests: int
+    success_rate_percent: float
+    avg_ttft_seconds: float
+    avg_tpot_seconds: float
+    avg_tps: float
+
+
 def find_evalscope_repo_root() -> Path | None:
     candidates = [
         SCRIPT_DIR,
@@ -293,37 +306,7 @@ def safe_decay(final_value: float, initial_value: float, reverse: bool = False) 
     return (final_value - initial_value) / initial_value * 100.0
 
 
-def build_time_windows(records: List[RequestRecord], ratio: float) -> tuple[float, float, float, float]:
-    success_records = [r for r in records if r.success and r.completed_time > 0]
-    if not success_records:
-        raise ValueError('No successful requests found, cannot build stability windows.')
-
-    start_ts = min(r.start_time for r in success_records)
-    end_ts = max(r.completed_time for r in success_records)
-    duration = max(end_ts - start_ts, 0.0)
-    if duration == 0:
-        raise ValueError('Benchmark duration is zero, cannot compute stability windows.')
-
-    window = duration * ratio
-    if window <= 0:
-        raise ValueError('Analysis window must be greater than zero.')
-
-    return start_ts, start_ts + window, end_ts - window, end_ts
-
-
-def window_records(records: List[RequestRecord], begin: float, end: float) -> List[RequestRecord]:
-    return [r for r in records if r.success and begin <= r.completed_time <= end]
-
-
-def calc_window_tps(records: List[RequestRecord], begin: float, end: float) -> float:
-    duration = max(end - begin, 0.0)
-    if duration <= 0:
-        return math.nan
-    total_tokens = sum(max(r.completion_tokens, 0) for r in records)
-    return total_tokens / duration
-
-
-def analyze_records(records: List[RequestRecord], analysis_ratio: float) -> dict:
+def summarize_batch(batch_index: int, records: List[RequestRecord]) -> BatchSummary:
     ordered = sorted(records, key=lambda r: (r.completed_time, r.start_time))
     success_records = [r for r in ordered if r.success]
     total_requests = len(ordered)
@@ -332,61 +315,129 @@ def analyze_records(records: List[RequestRecord], analysis_ratio: float) -> dict
     success_rate = (success_requests / total_requests * 100.0) if total_requests else math.nan
 
     if success_records:
-        analysis_start, early_end, late_begin, analysis_end = build_time_windows(ordered, analysis_ratio)
-        early_records = window_records(ordered, analysis_start, early_end)
-        late_records = window_records(ordered, late_begin, analysis_end)
-        early_ttft = mean(r.ttft for r in early_records if r.ttft is not None)
-        late_ttft = mean(r.ttft for r in late_records if r.ttft is not None)
-        early_tpot = mean(r.tpot for r in early_records if r.tpot is not None)
-        late_tpot = mean(r.tpot for r in late_records if r.tpot is not None)
-        early_tps = calc_window_tps(early_records, analysis_start, early_end)
-        late_tps = calc_window_tps(late_records, late_begin, analysis_end)
+        start_ts = min(r.start_time for r in success_records)
+        end_ts = max(r.completed_time for r in success_records)
+        duration = max(end_ts - start_ts, 0.0)
+        avg_ttft = mean(r.ttft for r in success_records if r.ttft is not None)
+        avg_tpot = mean(r.tpot for r in success_records if r.tpot is not None)
+        total_tokens = sum(max(r.completion_tokens, 0) for r in success_records)
+        avg_tps = (total_tokens / duration) if duration > 0 else math.nan
     else:
-        analysis_start = min((r.start_time for r in ordered), default=math.nan)
+        start_ts = min((r.start_time for r in ordered), default=math.nan)
         max_completed = max((r.completed_time for r in ordered if r.completed_time > 0), default=math.nan)
         max_started = max((r.start_time for r in ordered), default=math.nan)
-        if math.isnan(max_completed) or max_completed < analysis_start:
-            analysis_end = max_started
+        if math.isnan(max_completed) or max_completed < start_ts:
+            end_ts = max_started
         else:
-            analysis_end = max_completed
-        early_end = analysis_start
-        late_begin = analysis_end
-        early_records = []
-        late_records = []
-        early_ttft = math.nan
-        late_ttft = math.nan
-        early_tpot = math.nan
-        late_tpot = math.nan
-        early_tps = math.nan
-        late_tps = math.nan
+            end_ts = max_completed
+        duration = max(end_ts - start_ts, 0.0) if not math.isnan(start_ts) and not math.isnan(end_ts) else math.nan
+        avg_ttft = math.nan
+        avg_tpot = math.nan
+        avg_tps = math.nan
 
+    return BatchSummary(
+        batch_index=batch_index,
+        duration_seconds=duration,
+        total_requests=total_requests,
+        success_requests=success_requests,
+        failed_requests=failed_requests,
+        success_rate_percent=success_rate,
+        avg_ttft_seconds=avg_ttft,
+        avg_tpot_seconds=avg_tpot,
+        avg_tps=avg_tps,
+    )
+
+
+def choose_window_batch_count(total_batches: int) -> int:
+    if total_batches <= 3:
+        return 0
+    candidates = [
+        k for k in range(1, total_batches // 2 + 1)
+        if 0.15 <= (k / total_batches) <= 0.25
+    ]
+    if candidates:
+        target = total_batches * 0.2
+        return min(candidates, key=lambda k: (abs(k - target), k))
+    return 1
+
+
+def summarize_batch_window(batches: Sequence[BatchSummary]) -> dict:
+    total_requests = sum(batch.total_requests for batch in batches)
+    success_requests = sum(batch.success_requests for batch in batches)
+    failed_requests = sum(batch.failed_requests for batch in batches)
+    success_rate = (success_requests / total_requests * 100.0) if total_requests else math.nan
+    total_duration = sum(
+        batch.duration_seconds for batch in batches if batch.duration_seconds is not None and not math.isnan(batch.duration_seconds)
+    )
     return {
+        'batch_indexes': [batch.batch_index for batch in batches],
+        'batch_count': len(batches),
+        'duration_seconds': total_duration,
         'total_requests': total_requests,
         'success_requests': success_requests,
         'failed_requests': failed_requests,
         'success_rate_percent': success_rate,
-        'analysis_start': analysis_start,
-        'analysis_end': analysis_end,
-        'analysis_duration_seconds': max(analysis_end - analysis_start, 0.0),
-        'analysis_window_ratio': analysis_ratio,
-        'early_window': {
-            'begin': analysis_start,
-            'end': early_end,
-            'requests': len(early_records),
-            'avg_ttft_seconds': early_ttft,
-            'avg_tpot_seconds': early_tpot,
-            'avg_tps': early_tps,
-        },
-        'late_window': {
-            'begin': late_begin,
-            'end': analysis_end,
-            'requests': len(late_records),
-            'avg_ttft_seconds': late_ttft,
-            'avg_tpot_seconds': late_tpot,
-            'avg_tps': late_tps,
-        },
-        'ttft_decay_rate_percent': safe_decay(late_ttft, early_ttft, reverse=False),
-        'tps_decay_rate_percent': safe_decay(late_tps, early_tps, reverse=True),
+        'avg_ttft_seconds': mean(batch.avg_ttft_seconds for batch in batches if not math.isnan(batch.avg_ttft_seconds)),
+        'avg_tpot_seconds': mean(batch.avg_tpot_seconds for batch in batches if not math.isnan(batch.avg_tpot_seconds)),
+        'avg_tps': mean(batch.avg_tps for batch in batches if not math.isnan(batch.avg_tps)),
+    }
+
+
+def analyze_batches(batch_summaries: Sequence[BatchSummary]) -> dict:
+    total_batches = len(batch_summaries)
+    overall = summarize_batch_window(batch_summaries)
+    window_batch_count = choose_window_batch_count(total_batches)
+
+    if window_batch_count == 0:
+        note = (
+            f'批次数为 {total_batches}，不超过 3，按前后批次对比没有统计意义，因此仅展示整体汇总，不计算衰减。'
+        )
+        empty_window = {
+            'batch_indexes': [],
+            'batch_count': 0,
+            'duration_seconds': math.nan,
+            'total_requests': 0,
+            'success_requests': 0,
+            'failed_requests': 0,
+            'success_rate_percent': math.nan,
+            'avg_ttft_seconds': math.nan,
+            'avg_tpot_seconds': math.nan,
+            'avg_tps': math.nan,
+        }
+        return {
+            'comparable': False,
+            'note': note,
+            'total_batches': total_batches,
+            'window_batch_count': 0,
+            'overall': overall,
+            'early_window': empty_window,
+            'late_window': empty_window,
+            'ttft_decay_rate_percent': math.nan,
+            'tpot_decay_rate_percent': math.nan,
+            'tps_decay_rate_percent': math.nan,
+        }
+
+    early_batches = list(batch_summaries[:window_batch_count])
+    late_batches = list(batch_summaries[-window_batch_count:])
+    early_window = summarize_batch_window(early_batches)
+    late_window = summarize_batch_window(late_batches)
+    return {
+        'comparable': True,
+        'note': f'按批次统计：前 {window_batch_count} 个批次 vs 后 {window_batch_count} 个批次。',
+        'total_batches': total_batches,
+        'window_batch_count': window_batch_count,
+        'overall': overall,
+        'early_window': early_window,
+        'late_window': late_window,
+        'ttft_decay_rate_percent': safe_decay(
+            late_window['avg_ttft_seconds'], early_window['avg_ttft_seconds'], reverse=False
+        ),
+        'tpot_decay_rate_percent': safe_decay(
+            late_window['avg_tpot_seconds'], early_window['avg_tpot_seconds'], reverse=False
+        ),
+        'tps_decay_rate_percent': safe_decay(
+            late_window['avg_tps'], early_window['avg_tps'], reverse=True
+        ),
     }
 
 
@@ -425,15 +476,21 @@ def three_line_rows(analysis: dict) -> List[List[str]]:
     return [
         [
             '长周期',
-            format_duration(analysis['analysis_duration_seconds']),
-            str(analysis['total_requests']),
-            format_float(analysis['success_rate_percent'], digits=2, percent=True),
+            format_duration(analysis['overall']['duration_seconds']),
+            str(analysis['overall']['total_requests']),
+            format_float(analysis['overall']['success_rate_percent'], digits=2, percent=True),
         ],
         [
             'TTFT 衰减',
             format_seconds(analysis['early_window']['avg_ttft_seconds']),
             format_seconds(analysis['late_window']['avg_ttft_seconds']),
             format_float(analysis['ttft_decay_rate_percent'], digits=2, percent=True),
+        ],
+        [
+            'TPOT 衰减',
+            format_seconds(analysis['early_window']['avg_tpot_seconds']),
+            format_seconds(analysis['late_window']['avg_tpot_seconds']),
+            format_float(analysis['tpot_decay_rate_percent'], digits=2, percent=True),
         ],
         [
             'TPS 衰减',
@@ -536,9 +593,13 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         '',
         '## 说明',
         '',
-        '- Combined 为两路请求明细合并后的整体稳定性结果。',
-        '- TPS 按输出 token throughput 计算，即窗口内成功请求 completion_tokens 总和 / 窗口时长。',
-        '- Text/VL 单路结果保留，方便定位是哪一路先退化。',
+        '- Combined 为两路请求明细按批次合并后的整体稳定性结果。',
+        '- 长周期时长为各批次有效执行时长之和，不包含批次切换空档。',
+        '- TTFT/TPOT/TPS 衰减按批次统计，比较前后相同数量的批次。',
+        '- 当总批次数不超过 3 时，不进行前后批次衰减统计，只输出整体汇总。',
+        f'- Combined: {combined["note"]}',
+        f'- Text Lane: {text_lane["note"]}',
+        f'- VL Lane: {vl_lane["note"]}',
     ]
     (output_root / 'mixed_stability_report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -573,8 +634,6 @@ def parse_args() -> argparse.Namespace:
         default=24.0 * 60.0,
         help='Target benchmark duration in minutes.',
     )
-    parser.add_argument('--analysis-window-ratio', type=float, default=0.15)
-
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--no-test-connection', action='store_true', default=False)
     parser.add_argument('--connect-timeout', type=int, default=None)
@@ -608,8 +667,6 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration_minutes <= 0:
         parser.error('--duration-minutes must be > 0')
-    if not 0 < args.analysis_window_ratio < 0.5:
-        parser.error('--analysis-window-ratio must be in (0, 0.5)')
     args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
     if not args.output_root:
         args.output_root = str(build_default_output_root(args.model))
@@ -631,12 +688,13 @@ def main() -> int:
     started_at = time.time()
     batch_index = 0
 
-    vl_records: List[RequestRecord] = []
-    text_records: List[RequestRecord] = []
     vl_db_paths: List[str] = []
     text_db_paths: List[str] = []
     vl_run_dirs: List[str] = []
     text_run_dirs: List[str] = []
+    combined_batches: List[BatchSummary] = []
+    text_batches: List[BatchSummary] = []
+    vl_batches: List[BatchSummary] = []
 
     while True:
         elapsed = time.time() - started_at
@@ -649,21 +707,24 @@ def main() -> int:
         text_run_dirs.append(str(batch_result['text_run_dir']))
         vl_db_paths.append(str(batch_result['vl_db']))
         text_db_paths.append(str(batch_result['text_db']))
-        vl_records.extend(load_requests_from_db(batch_result['vl_db']))
-        text_records.extend(load_requests_from_db(batch_result['text_db']))
+        vl_records = load_requests_from_db(batch_result['vl_db'])
+        text_records = load_requests_from_db(batch_result['text_db'])
+        vl_batches.append(summarize_batch(batch_index, vl_records))
+        text_batches.append(summarize_batch(batch_index, text_records))
+        combined_batches.append(summarize_batch(batch_index, vl_records + text_records))
 
         elapsed = time.time() - started_at
         print(
             f'[progress] batch={batch_index}, elapsed={format_duration(elapsed)}, '
-            f'target={format_duration(target_seconds)}, text_requests={len(text_records)}, vl_requests={len(vl_records)}',
+            f'target={format_duration(target_seconds)}, text_requests={text_batches[-1].total_requests}, '
+            f'vl_requests={vl_batches[-1].total_requests}',
             flush=True,
         )
 
-    combined_records = sorted(vl_records + text_records, key=lambda r: (r.completed_time, r.start_time))
     analysis = {
-        'combined': analyze_records(combined_records, args.analysis_window_ratio),
-        'text_lane': analyze_records(text_records, args.analysis_window_ratio),
-        'vl_lane': analyze_records(vl_records, args.analysis_window_ratio),
+        'combined': analyze_batches(combined_batches),
+        'text_lane': analyze_batches(text_batches),
+        'vl_lane': analyze_batches(vl_batches),
     }
 
     meta = {
@@ -672,7 +733,6 @@ def main() -> int:
         'url': args.url,
         'api': args.api,
         'target_duration_minutes': args.duration_minutes,
-        'analysis_window_ratio': args.analysis_window_ratio,
         'batch_count': batch_index,
         'vl_config': {
             'parallel': args.vl_parallel,
@@ -696,6 +756,9 @@ def main() -> int:
         'text_run_dirs': text_run_dirs,
         'vl_db_paths': vl_db_paths,
         'text_db_paths': text_db_paths,
+        'combined_batch_summaries': [batch.__dict__ for batch in combined_batches],
+        'text_batch_summaries': [batch.__dict__ for batch in text_batches],
+        'vl_batch_summaries': [batch.__dict__ for batch in vl_batches],
         'analysis': analysis,
     }
     write_reports(output_root, args, meta)
@@ -704,8 +767,8 @@ def main() -> int:
     for scope in ('combined', 'text_lane', 'vl_lane'):
         item = analysis[scope]
         print(
-            f'  {scope}: duration={format_duration(item["analysis_duration_seconds"])}, '
-            f'requests={item["total_requests"]}, success_rate={format_float(item["success_rate_percent"], digits=2, percent=True)}, '
+            f'  {scope}: duration={format_duration(item["overall"]["duration_seconds"])}, '
+            f'requests={item["overall"]["total_requests"]}, success_rate={format_float(item["overall"]["success_rate_percent"], digits=2, percent=True)}, '
             f'ttft_decay={format_float(item["ttft_decay_rate_percent"], digits=2, percent=True)}, '
             f'tps_decay={format_float(item["tps_decay_rate_percent"], digits=2, percent=True)}',
             flush=True,
