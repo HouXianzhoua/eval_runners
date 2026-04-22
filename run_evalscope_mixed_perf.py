@@ -396,8 +396,8 @@ def generate_combined_report(output_root: Path, model: str, url: str, summaries:
     for name, path in summaries.items():
         report_lines.append(f'- {name}: {path}')
 
-    report_path = output_root / 'combined_performance_summary.txt'
-    report_path.write_text('\n'.join(report_lines) + '\n')
+    report_path = output_root / 'combined_performance_summary.md'
+    report_path.write_text('\n'.join(report_lines) + '\n', encoding='utf-8')
     return report_path
 
 
