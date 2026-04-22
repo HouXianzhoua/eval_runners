@@ -445,9 +445,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
 
-    parser.add_argument('--vl-name', default='mixed_vl_2c_300n')
+    parser.add_argument('--vl-name', default='mixed_vl_3c_300n')
     parser.add_argument('--vl-number', type=int, default=300)
-    parser.add_argument('--vl-parallel', type=int, default=2)
+    parser.add_argument('--vl-parallel', type=int, default=3)
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-max-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-output-tokens', type=int, default=250)
@@ -458,9 +458,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--image-num', type=int, default=2)
     parser.add_argument('--image-format', default='RGB')
 
-    parser.add_argument('--text-name', default='mixed_text_6c_600n')
+    parser.add_argument('--text-name', default='mixed_text_5c_600n')
     parser.add_argument('--text-number', type=int, default=600)
-    parser.add_argument('--text-parallel', type=int, default=6)
+    parser.add_argument('--text-parallel', type=int, default=5)
     parser.add_argument('--text-min-prompt-length', type=int, default=2000)
     parser.add_argument('--text-max-prompt-length', type=int, default=10000)
     parser.add_argument('--text-output-tokens', type=int, default=50)

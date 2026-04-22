@@ -643,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--debug', action='store_true', default=False)
 
     parser.add_argument('--enable-warmup', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--vl-parallel', type=int, default=2)
+    parser.add_argument('--vl-parallel', type=int, default=3)
     parser.add_argument('--vl-number', type=int, default=100)
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-max-prompt-length', type=int, default=1000)
@@ -655,7 +655,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--image-num', type=int, default=2)
     parser.add_argument('--image-format', default='RGB')
 
-    parser.add_argument('--text-parallel', type=int, default=6)
+    parser.add_argument('--text-parallel', type=int, default=5)
     parser.add_argument('--text-number', type=int, default=200)
     parser.add_argument('--text-min-prompt-length', type=int, default=2000)
     parser.add_argument('--text-max-prompt-length', type=int, default=10000)
