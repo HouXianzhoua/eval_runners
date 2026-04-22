@@ -24,8 +24,8 @@ def main() -> int:
         argv.extend(['--output-root', str(DEFAULT_OUTPUT_ROOT)])
 
     smoke_defaults = [
-        '--duration-hours',
-        '0.0333333333',
+        '--duration-minutes',
+        '5',
         '--vl-parallel',
         '2',
         '--vl-number',

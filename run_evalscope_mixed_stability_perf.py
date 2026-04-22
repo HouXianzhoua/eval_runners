@@ -519,7 +519,7 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         f'- Generated At: {meta["generated_at"]}',
         f'- Model: {args.model}',
         f'- URL: {args.url}',
-        f'- Target Duration: {args.duration_hours:.4f}h',
+        f'- Target Duration: {args.duration_minutes:.2f}m',
         f'- Output Root: {output_root}',
         '',
         '## Combined',
@@ -567,7 +567,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--evalscope-bin', default='evalscope')
     parser.add_argument('--tokenizer-path', required=True)
     parser.add_argument('--output-root', default=None)
-    parser.add_argument('--duration-hours', type=float, default=24.0)
+    parser.add_argument('--duration-minutes', type=float, default=24.0 * 60.0)
     parser.add_argument('--analysis-window-ratio', type=float, default=0.15)
 
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True)
@@ -601,8 +601,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--text-tokenize-prompt', action='store_true', default=False)
 
     args = parser.parse_args()
-    if args.duration_hours <= 0:
-        parser.error('--duration-hours must be > 0')
+    if args.duration_minutes <= 0:
+        parser.error('--duration-minutes must be > 0')
     if not 0 < args.analysis_window_ratio < 0.5:
         parser.error('--analysis-window-ratio must be in (0, 0.5)')
     args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
@@ -622,7 +622,7 @@ def main() -> int:
 
     run_warmup(args, output_root)
 
-    target_seconds = args.duration_hours * 3600.0
+    target_seconds = args.duration_minutes * 60.0
     started_at = time.time()
     batch_index = 0
 
@@ -666,7 +666,7 @@ def main() -> int:
         'model': args.model,
         'url': args.url,
         'api': args.api,
-        'target_duration_hours': args.duration_hours,
+        'target_duration_minutes': args.duration_minutes,
         'analysis_window_ratio': args.analysis_window_ratio,
         'batch_count': batch_index,
         'vl_config': {
