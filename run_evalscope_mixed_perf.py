@@ -122,7 +122,7 @@ def build_common_args(args: argparse.Namespace, run_name: str) -> List[str]:
         '--max-tokens',
         str(args.max_tokens_placeholder),
         '--outputs-dir',
-        str(Path(args.output_root) / run_name),
+        str(Path(args.output_root)),
         '--name',
         run_name,
         '--stream' if args.stream else '--no-stream',

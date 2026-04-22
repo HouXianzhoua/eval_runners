@@ -450,8 +450,8 @@ def run_lane_pair(batch_index: int, args: argparse.Namespace, output_root: Path)
     vl_name = f'vl_batch_{batch_index:04d}'
     text_name = f'text_batch_{batch_index:04d}'
 
-    vl_cmd = build_vl_cmd(args, vl_name, batch_root / 'vl', args.vl_parallel, args.vl_number)
-    text_cmd = build_text_cmd(args, text_name, batch_root / 'text', args.text_parallel, args.text_number)
+    vl_cmd = build_vl_cmd(args, vl_name, batch_root, args.vl_parallel, args.vl_number)
+    text_cmd = build_text_cmd(args, text_name, batch_root, args.text_parallel, args.text_number)
 
     results: Dict[str, int] = {}
     errors: Dict[str, str] = {}
@@ -481,8 +481,8 @@ def run_lane_pair(batch_index: int, args: argparse.Namespace, output_root: Path)
     if failed:
         raise RuntimeError(f'Failed lane batch jobs: {failed}, errors={errors}')
 
-    vl_run_dir = find_named_run_dir(batch_root / 'vl', vl_name)
-    text_run_dir = find_named_run_dir(batch_root / 'text', text_name)
+    vl_run_dir = find_named_run_dir(batch_root, vl_name)
+    text_run_dir = find_named_run_dir(batch_root, text_name)
     vl_db = find_result_db(vl_run_dir)
     text_db = find_result_db(text_run_dir)
     return {
