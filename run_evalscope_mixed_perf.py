@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, List
@@ -105,7 +106,7 @@ def validate_tokenizer_args(parser: argparse.ArgumentParser, args: argparse.Name
         )
 
 
-def build_common_args(args: argparse.Namespace, run_name: str) -> List[str]:
+def build_common_args(args: argparse.Namespace, run_name: str, output_root: Path | None = None) -> List[str]:
     cmd = [
         *args.evalscope_cmd,
         'perf',
@@ -122,7 +123,7 @@ def build_common_args(args: argparse.Namespace, run_name: str) -> List[str]:
         '--max-tokens',
         str(args.max_tokens_placeholder),
         '--outputs-dir',
-        str(Path(args.output_root)),
+        str(output_root if output_root is not None else Path(args.output_root)),
         '--name',
         run_name,
         '--stream' if args.stream else '--no-stream',
@@ -145,9 +146,9 @@ def build_common_args(args: argparse.Namespace, run_name: str) -> List[str]:
     return cmd
 
 
-def build_vl_cmd(args: argparse.Namespace) -> List[str]:
+def build_vl_cmd(args: argparse.Namespace, output_root: Path | None = None) -> List[str]:
     run_name = args.vl_name
-    common = build_common_args(args, run_name)
+    common = build_common_args(args, run_name, output_root)
     replace_arg(common, '--parallel', str(args.vl_parallel))
     replace_arg(common, '--number', str(args.vl_number))
     replace_arg(common, '--max-tokens', str(args.vl_output_tokens))
@@ -174,9 +175,9 @@ def build_vl_cmd(args: argparse.Namespace) -> List[str]:
     return cmd
 
 
-def build_text_cmd(args: argparse.Namespace) -> List[str]:
+def build_text_cmd(args: argparse.Namespace, output_root: Path | None = None) -> List[str]:
     run_name = args.text_name
-    common = build_common_args(args, run_name)
+    common = build_common_args(args, run_name, output_root)
     replace_arg(common, '--parallel', str(args.text_parallel))
     replace_arg(common, '--number', str(args.text_number))
     replace_arg(common, '--max-tokens', str(args.text_output_tokens))
@@ -211,8 +212,9 @@ def stream_output(name: str, pipe, sink) -> None:
         pipe.close()
 
 
-def run_job(name: str, cmd: List[str]) -> int:
-    print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
+def run_job(name: str, cmd: List[str], quiet: bool = False) -> int:
+    if not quiet:
+        print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
     env = os.environ.copy()
     repo_root = find_evalscope_repo_root()
     existing_pythonpath = env.get('PYTHONPATH')
@@ -233,15 +235,66 @@ def run_job(name: str, cmd: List[str]) -> int:
         print(f'[{name}] failed to start subprocess: {exc}', file=sys.stderr, flush=True)
         return 1
 
-    stdout_thread = threading.Thread(target=stream_output, args=(name, proc.stdout, sys.stdout), daemon=True)
-    stderr_thread = threading.Thread(target=stream_output, args=(name, proc.stderr, sys.stderr), daemon=True)
-    stdout_thread.start()
-    stderr_thread.start()
+    stdout_thread = None
+    stderr_thread = None
+    if not quiet:
+        stdout_thread = threading.Thread(target=stream_output, args=(name, proc.stdout, sys.stdout), daemon=True)
+        stderr_thread = threading.Thread(target=stream_output, args=(name, proc.stderr, sys.stderr), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
     rc = proc.wait()
-    stdout_thread.join()
-    stderr_thread.join()
-    print(f'[{name}] finished with exit code {rc}', flush=True)
+    if quiet:
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+    else:
+        assert stdout_thread is not None and stderr_thread is not None
+        stdout_thread.join()
+        stderr_thread.join()
+        print(f'[{name}] finished with exit code {rc}', flush=True)
     return rc
+
+
+def run_warmup(args: argparse.Namespace) -> None:
+    if not args.enable_warmup:
+        return
+
+    with tempfile.TemporaryDirectory(prefix='evalscope_mixed_perf_warmup_') as warmup_dir:
+        warmup_root = Path(warmup_dir)
+        vl_cmd = build_vl_cmd(args, warmup_root)
+        text_cmd = build_text_cmd(args, warmup_root)
+
+        results = {}
+        errors = {}
+        lock = threading.Lock()
+
+        def target(name: str, cmd: List[str]) -> None:
+            try:
+                rc = run_job(name, cmd, quiet=True)
+            except Exception as exc:  # defensive: threads must never fail silently
+                rc = 1
+                with lock:
+                    errors[name] = str(exc)
+            with lock:
+                results[name] = rc
+
+        threads = [
+            threading.Thread(target=target, args=('VL-WARMUP', vl_cmd), daemon=False),
+            threading.Thread(target=target, args=('TEXT-WARMUP', text_cmd), daemon=False),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        if len(results) != 2:
+            raise RuntimeError(f'Warmup only collected partial results: {results}')
+        if errors:
+            raise RuntimeError(f'Warmup thread errors: {errors}')
+        failed = {name: rc for name, rc in results.items() if rc != 0}
+        if failed:
+            raise RuntimeError(f'Warmup failed jobs: {failed}')
 
 
 def extract_section(lines: List[str], title: str) -> List[str]:
@@ -444,6 +497,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--total-timeout', type=int, default=6 * 60 * 60)
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
+    parser.add_argument('--enable-warmup', action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument('--vl-name', default='mixed_vl_2c_300n')
     parser.add_argument('--vl-number', type=int, default=300)
@@ -498,6 +552,8 @@ def main() -> int:
     args = parse_args()
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
+
+    run_warmup(args)
 
     vl_cmd = build_vl_cmd(args)
     text_cmd = build_text_cmd(args)

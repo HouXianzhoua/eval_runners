@@ -26,6 +26,7 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -221,8 +222,9 @@ def build_text_cmd(
     return cmd
 
 
-def run_job(name: str, cmd: Sequence[str]) -> int:
-    print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
+def run_job(name: str, cmd: Sequence[str], quiet: bool = False) -> int:
+    if not quiet:
+        print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
     env = os.environ.copy()
     repo_root = find_evalscope_repo_root()
     existing_pythonpath = env.get('PYTHONPATH')
@@ -239,8 +241,12 @@ def run_job(name: str, cmd: Sequence[str]) -> int:
         cwd=str(repo_root if repo_root else SCRIPT_DIR),
     )
     assert proc.stdout is not None
-    for line in proc.stdout:
-        print(f'[{name}] {line}', end='', flush=True)
+    if quiet:
+        for _ in proc.stdout:
+            pass
+    else:
+        for line in proc.stdout:
+            print(f'[{name}] {line}', end='', flush=True)
     return proc.wait()
 
 
@@ -553,11 +559,43 @@ def run_lane_pair(batch_index: int, args: argparse.Namespace, output_root: Path)
 def run_warmup(args: argparse.Namespace, output_root: Path) -> None:
     if not args.enable_warmup:
         return
-    warmup_root = output_root / 'warmup'
-    warmup_root.mkdir(parents=True, exist_ok=True)
-    print('Starting warmup...', flush=True)
-    run_lane_pair(0, args, warmup_root)
-    print('Warmup completed.', flush=True)
+    with tempfile.TemporaryDirectory(prefix='evalscope_mixed_stability_warmup_') as warmup_dir:
+        warmup_root = Path(warmup_dir)
+        vl_name = 'vl_batch_0000'
+        text_name = 'text_batch_0000'
+        vl_cmd = build_vl_cmd(args, vl_name, warmup_root, args.vl_parallel, args.vl_number)
+        text_cmd = build_text_cmd(args, text_name, warmup_root, args.text_parallel, args.text_number)
+
+        results: Dict[str, int] = {}
+        errors: Dict[str, str] = {}
+        lock = threading.Lock()
+
+        def target(name: str, cmd: List[str]) -> None:
+            try:
+                rc = run_job(name, cmd, quiet=True)
+            except Exception as exc:
+                rc = 1
+                with lock:
+                    errors[name] = str(exc)
+            with lock:
+                results[name] = rc
+
+        threads = [
+            threading.Thread(target=target, args=('VL-WARMUP', vl_cmd), daemon=False),
+            threading.Thread(target=target, args=('TEXT-WARMUP', text_cmd), daemon=False),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        if len(results) != 2:
+            raise RuntimeError(f'Warmup only collected partial results: {results}')
+        if errors:
+            raise RuntimeError(f'Warmup thread errors: {errors}')
+        failed = {name: rc for name, rc in results.items() if rc != 0}
+        if failed:
+            raise RuntimeError(f'Warmup failed jobs: {failed}')
 
 
 def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> None:
