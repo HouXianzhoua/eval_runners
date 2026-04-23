@@ -436,7 +436,7 @@ def analyze_batches(batch_summaries: Sequence[BatchSummary]) -> dict:
             late_window['avg_tpot_seconds'], early_window['avg_tpot_seconds'], reverse=False
         ),
         'tps_decay_rate_percent': safe_decay(
-            late_window['avg_tps'], early_window['avg_tps'], reverse=True
+            late_window['avg_tps'], early_window['avg_tps'], reverse=False
         ),
     }
 
