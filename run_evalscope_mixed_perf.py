@@ -124,6 +124,7 @@ def build_common_args(args: argparse.Namespace, run_name: str, output_root: Path
         str(args.max_tokens_placeholder),
         '--outputs-dir',
         str(output_root if output_root is not None else Path(args.output_root)),
+        '--no-timestamp',
         '--name',
         run_name,
         '--stream' if args.stream else '--no-stream',
@@ -454,8 +455,11 @@ def generate_combined_report(output_root: Path, model: str, url: str, summaries:
     return report_path
 
 
-def find_latest_summary(run_dir: Path) -> Path | None:
-    summaries = list(run_dir.rglob('performance_summary.txt'))
+def find_named_summary(output_root: Path, run_name: str) -> Path | None:
+    summaries = [
+        path for path in output_root.rglob('performance_summary.txt')
+        if path.parent.name == run_name
+    ]
     if not summaries:
         return None
     return max(summaries, key=lambda path: path.stat().st_mtime)
@@ -595,8 +599,8 @@ def main() -> int:
         return 1
 
     summary_candidates = {
-        'VL': find_latest_summary(output_root / args.vl_name),
-        'TEXT': find_latest_summary(output_root / args.text_name),
+        'VL': find_named_summary(output_root, args.vl_name),
+        'TEXT': find_named_summary(output_root, args.text_name),
     }
     missing_summaries = {
         name: str(output_root / (args.vl_name if name == 'VL' else args.text_name))
