@@ -57,6 +57,10 @@ class BatchSummary:
     success_requests: int
     failed_requests: int
     success_rate_percent: float
+    ttft_sum_seconds: float
+    ttft_count: int
+    tpot_sum_seconds: float
+    tpot_count: int
     avg_ttft_seconds: float
     avg_tpot_seconds: float
     avg_tps: float
@@ -324,8 +328,14 @@ def summarize_batch(batch_index: int, records: List[RequestRecord]) -> BatchSumm
         start_ts = min(r.start_time for r in success_records)
         end_ts = max(r.completed_time for r in success_records)
         duration = max(end_ts - start_ts, 0.0)
-        avg_ttft = mean(r.ttft for r in success_records if r.ttft is not None)
-        avg_tpot = mean(r.tpot for r in success_records if r.tpot is not None)
+        ttft_values = [r.ttft for r in success_records if r.ttft is not None]
+        tpot_values = [r.tpot for r in success_records if r.tpot is not None]
+        ttft_sum = sum(ttft_values)
+        tpot_sum = sum(tpot_values)
+        ttft_count = len(ttft_values)
+        tpot_count = len(tpot_values)
+        avg_ttft = (ttft_sum / ttft_count) if ttft_count else math.nan
+        avg_tpot = (tpot_sum / tpot_count) if tpot_count else math.nan
         total_tokens = sum(max(r.completion_tokens, 0) for r in success_records)
         avg_tps = (total_tokens / duration) if duration > 0 else math.nan
     else:
@@ -337,6 +347,10 @@ def summarize_batch(batch_index: int, records: List[RequestRecord]) -> BatchSumm
         else:
             end_ts = max_completed
         duration = max(end_ts - start_ts, 0.0) if not math.isnan(start_ts) and not math.isnan(end_ts) else math.nan
+        ttft_sum = 0.0
+        tpot_sum = 0.0
+        ttft_count = 0
+        tpot_count = 0
         avg_ttft = math.nan
         avg_tpot = math.nan
         avg_tps = math.nan
@@ -348,6 +362,10 @@ def summarize_batch(batch_index: int, records: List[RequestRecord]) -> BatchSumm
         success_requests=success_requests,
         failed_requests=failed_requests,
         success_rate_percent=success_rate,
+        ttft_sum_seconds=ttft_sum,
+        ttft_count=ttft_count,
+        tpot_sum_seconds=tpot_sum,
+        tpot_count=tpot_count,
         avg_ttft_seconds=avg_ttft,
         avg_tpot_seconds=avg_tpot,
         avg_tps=avg_tps,
@@ -372,6 +390,10 @@ def summarize_batch_window(batches: Sequence[BatchSummary]) -> dict:
     success_requests = sum(batch.success_requests for batch in batches)
     failed_requests = sum(batch.failed_requests for batch in batches)
     success_rate = (success_requests / total_requests * 100.0) if total_requests else math.nan
+    ttft_sum = sum(batch.ttft_sum_seconds for batch in batches)
+    ttft_count = sum(batch.ttft_count for batch in batches)
+    tpot_sum = sum(batch.tpot_sum_seconds for batch in batches)
+    tpot_count = sum(batch.tpot_count for batch in batches)
     total_duration = sum(
         batch.duration_seconds for batch in batches if batch.duration_seconds is not None and not math.isnan(batch.duration_seconds)
     )
@@ -383,8 +405,8 @@ def summarize_batch_window(batches: Sequence[BatchSummary]) -> dict:
         'success_requests': success_requests,
         'failed_requests': failed_requests,
         'success_rate_percent': success_rate,
-        'avg_ttft_seconds': mean(batch.avg_ttft_seconds for batch in batches if not math.isnan(batch.avg_ttft_seconds)),
-        'avg_tpot_seconds': mean(batch.avg_tpot_seconds for batch in batches if not math.isnan(batch.avg_tpot_seconds)),
+        'avg_ttft_seconds': (ttft_sum / ttft_count) if ttft_count else math.nan,
+        'avg_tpot_seconds': (tpot_sum / tpot_count) if tpot_count else math.nan,
         'avg_tps': mean(batch.avg_tps for batch in batches if not math.isnan(batch.avg_tps)),
     }
 
