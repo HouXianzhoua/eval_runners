@@ -7,6 +7,10 @@ Workload default:
 - 600 text-only requests, concurrency 6, input length sampled uniformly from
   2000 to 10000 tokens, output 50 tokens.
 
+Pass --parallel to set total mixed concurrency. The script splits it 1:3
+between multimodal and text-only workloads, so the value must be a multiple
+of 4.
+
 The script launches two independent `evalscope perf` subprocesses so each load
 profile still uses EvalScope's native perf implementation.
 """
@@ -502,8 +506,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--enable-warmup', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        '--parallel',
+        type=int,
+        default=None,
+        help='Total mixed concurrency. Must be a positive multiple of 4; split as 1/4 multimodal and 3/4 text-only.',
+    )
 
-    parser.add_argument('--vl-name', default='mixed_vl_2c_300n')
+    parser.add_argument('--vl-name', default=None)
     parser.add_argument('--vl-number', type=int, default=300)
     parser.add_argument('--vl-parallel', type=int, default=2)
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
@@ -516,7 +526,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--image-num', type=int, default=2)
     parser.add_argument('--image-format', default='RGB')
 
-    parser.add_argument('--text-name', default='mixed_text_6c_600n')
+    parser.add_argument('--text-name', default=None)
     parser.add_argument('--text-number', type=int, default=600)
     parser.add_argument('--text-parallel', type=int, default=6)
     parser.add_argument('--text-min-prompt-length', type=int, default=2000)
@@ -535,9 +545,19 @@ def parse_args() -> argparse.Namespace:
     args.parallel_placeholder = 1
     args.number_placeholder = 1
     args.max_tokens_placeholder = 1
-    args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
-    if not args.output_root:
-        args.output_root = str(build_default_output_root(args.model))
+
+    if args.parallel is not None:
+        if args.parallel <= 0:
+            parser.error('--parallel must be a positive integer')
+        if args.parallel % 4 != 0:
+            parser.error('--parallel must be a multiple of 4 so multimodal:text-only concurrency can be split 1:3')
+        args.vl_parallel = args.parallel // 4
+        args.text_parallel = args.parallel * 3 // 4
+
+    if args.vl_name is None:
+        args.vl_name = f'mixed_vl_{args.vl_parallel}c_{args.vl_number}n'
+    if args.text_name is None:
+        args.text_name = f'mixed_text_{args.text_parallel}c_{args.text_number}n'
 
     if not args.vl_tokenizer_path:
         args.vl_tokenizer_path = args.tokenizer_path
@@ -549,6 +569,9 @@ def parse_args() -> argparse.Namespace:
     if args.vl_min_prompt_length > args.vl_max_prompt_length:
         parser.error('--vl-min-prompt-length must be <= --vl-max-prompt-length')
     validate_tokenizer_args(parser, args)
+    args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
+    if not args.output_root:
+        args.output_root = str(build_default_output_root(args.model))
     return args
 
 
@@ -556,6 +579,9 @@ def main() -> int:
     args = parse_args()
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
+
+    if args.parallel is not None:
+        print(f'Total concurrency {args.parallel}: VL={args.vl_parallel}, TEXT={args.text_parallel}', flush=True)
 
     run_warmup(args)
 
