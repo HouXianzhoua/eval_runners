@@ -269,18 +269,27 @@ def run_warmup(args: argparse.Namespace) -> None:
         warmup_root = Path(warmup_dir)
         vl_cmd = build_vl_cmd(args, warmup_root)
         text_cmd = build_text_cmd(args, warmup_root)
+        print(
+            f'Running warmup: VL={args.vl_number} requests at concurrency {args.vl_parallel}, '
+            f'TEXT={args.text_number} requests at concurrency {args.text_parallel}',
+            flush=True,
+        )
 
         results = {}
         errors = {}
         lock = threading.Lock()
 
         def target(name: str, cmd: List[str]) -> None:
+            print(f'[{name}] warmup started', flush=True)
             try:
                 rc = run_job(name, cmd, quiet=True)
             except Exception as exc:  # defensive: threads must never fail silently
                 rc = 1
                 with lock:
                     errors[name] = str(exc)
+                print(f'[{name}] warmup failed with error: {exc}', file=sys.stderr, flush=True)
+            else:
+                print(f'[{name}] warmup finished with exit code {rc}', flush=True)
             with lock:
                 results[name] = rc
 
@@ -300,6 +309,7 @@ def run_warmup(args: argparse.Namespace) -> None:
         failed = {name: rc for name, rc in results.items() if rc != 0}
         if failed:
             raise RuntimeError(f'Warmup failed jobs: {failed}')
+        print('Warmup finished successfully.', flush=True)
 
 
 def extract_section(lines: List[str], title: str) -> List[str]:
