@@ -862,14 +862,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--duration-minutes',
         type=float,
-        default=24.0 * 60.0,
-        help='Target benchmark duration in minutes.',
+        default=720.0,
+        help='Target benchmark duration in minutes. Default 720 (12 hours).',
     )
     parser.add_argument(
         '--window-minutes',
         type=float,
-        default=120.0,
-        help='Analysis window size in minutes. Default 120 minutes, producing 12 windows for a 24h run.',
+        default=60.0,
+        help='Analysis window size in minutes. Default 60 minutes.',
     )
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--no-test-connection', action='store_true', default=False)
@@ -894,8 +894,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--parallel',
         type=int,
-        default=None,
-        help='Total mixed concurrency. Must be a positive multiple of 8; split as 3/8 multimodal and 5/8 text-only.',
+        default=8,
+        help='Total mixed concurrency. Must be a positive multiple of 8; split as 3/8 multimodal (VL) and 5/8 text-only. Default 8.',
     )
     parser.add_argument('--vl-parallel', type=int, default=2)
     parser.add_argument('--vl-number', type=int, default=100)
