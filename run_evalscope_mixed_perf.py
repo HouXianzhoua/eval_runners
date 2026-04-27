@@ -269,9 +269,11 @@ def run_warmup(args: argparse.Namespace) -> None:
         warmup_root = Path(warmup_dir)
         vl_cmd = build_vl_cmd(args, warmup_root)
         text_cmd = build_text_cmd(args, warmup_root)
+        replace_arg(vl_cmd, '--number', str(args.vl_warmup_number))
+        replace_arg(text_cmd, '--number', str(args.text_warmup_number))
         print(
-            f'Running warmup: VL={args.vl_number} requests at concurrency {args.vl_parallel}, '
-            f'TEXT={args.text_number} requests at concurrency {args.text_parallel}',
+            f'Running warmup: VL={args.vl_warmup_number} requests at concurrency {args.vl_parallel}, '
+            f'TEXT={args.text_warmup_number} requests at concurrency {args.text_parallel}',
             flush=True,
         )
 
@@ -516,6 +518,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--enable-warmup', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--vl-warmup-number', type=int, default=20, help='Warmup request count for random_vl.')
+    parser.add_argument('--text-warmup-number', type=int, default=40, help='Warmup request count for random text.')
     parser.add_argument(
         '--parallel',
         type=int,
@@ -578,6 +582,10 @@ def parse_args() -> argparse.Namespace:
         parser.error('--text-min-prompt-length must be <= --text-max-prompt-length')
     if args.vl_min_prompt_length > args.vl_max_prompt_length:
         parser.error('--vl-min-prompt-length must be <= --vl-max-prompt-length')
+    if args.vl_warmup_number <= 0:
+        parser.error('--vl-warmup-number must be a positive integer')
+    if args.text_warmup_number <= 0:
+        parser.error('--text-warmup-number must be a positive integer')
     validate_tokenizer_args(parser, args)
     args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
     if not args.output_root:
