@@ -612,7 +612,6 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     ensure_evalscope_on_path()
     from evalscope.perf.http_client import AioHttpClient, test_connection
     from evalscope.perf.plugin import ApiRegistry
-    from evalscope.perf.utils.benchmark_util import Metrics
     from evalscope.perf.utils.db_util import summary_result
 
     run_dir = output_root / 'continuous' / lane
@@ -620,7 +619,7 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     lane_args = build_evalscope_lane_args(args, lane, run_dir)
     api_plugin = ApiRegistry.get_class(lane_args.api)(lane_args)
 
-    if not Metrics.is_embedding_or_rerank(lane_args.api) and not lane_args.no_test_connection:
+    if not lane_args.no_test_connection:
         ok = await test_connection(lane_args, api_plugin)
         if not ok:
             raise TimeoutError(f'{lane} connection test failed')
@@ -700,7 +699,6 @@ async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path
     ensure_evalscope_on_path()
     from evalscope.perf.http_client import AioHttpClient, test_connection
     from evalscope.perf.plugin import ApiRegistry
-    from evalscope.perf.utils.benchmark_util import Metrics
 
     if request_count <= 0:
         return WarmupLaneResult(lane=lane, total_requests=0, success_requests=0, failed_requests=0, duration_seconds=0.0)
@@ -712,7 +710,7 @@ async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path
     lane_args.parallel = min(int(lane_args.parallel), int(request_count))
     api_plugin = ApiRegistry.get_class(lane_args.api)(lane_args)
 
-    if not Metrics.is_embedding_or_rerank(lane_args.api) and not lane_args.no_test_connection:
+    if not lane_args.no_test_connection:
         ok = await test_connection(lane_args, api_plugin)
         if not ok:
             raise TimeoutError(f'{lane} warmup connection test failed')
