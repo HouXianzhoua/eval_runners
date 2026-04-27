@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
 """Run a long-duration mixed EvalScope perf benchmark and generate stability reports.
 
-This script preserves the request types and subprocess launch pattern from
-`run_evalscope_mixed_perf.py`:
+This script preserves the request types from `run_evalscope_mixed_perf.py`:
 
 - one multimodal lane using `random_vl`
 - one text-only lane using `random`
 
-The difference is that the benchmark runs by wall-clock duration instead of
-fixed request totals. Each lane is executed in rolling EvalScope perf batches
-until the target duration is reached. At the end, all batch DBs are aggregated
-to compute stability metrics.
+Each lane runs continuously in-process by reusing EvalScope's dataset/API/client
+and DB helpers. The runner stops scheduling new requests when the target
+duration is reached, then waits for in-flight requests to finish.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as dt
 import json
 import math
 import os
-import shlex
-import shutil
 import sqlite3
 import statistics
-import subprocess
 import sys
-import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Tuple
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,26 +38,37 @@ class RequestRecord:
     start_time: float
     completed_time: float
     success: bool
+    latency: float | None
     ttft: float | None
     tpot: float | None
     completion_tokens: int
 
 
 @dataclass
-class BatchSummary:
-    batch_index: int
+class WindowSummary:
+    label: str
+    start_offset_seconds: float
+    end_offset_seconds: float
     duration_seconds: float
     total_requests: int
     success_requests: int
     failed_requests: int
     success_rate_percent: float
-    ttft_sum_seconds: float
-    ttft_count: int
-    tpot_sum_seconds: float
-    tpot_count: int
     avg_ttft_seconds: float
+    p99_ttft_seconds: float
     avg_tpot_seconds: float
+    p99_tpot_seconds: float
     avg_tps: float
+    p99_tps: float
+    avg_e2e_seconds: float
+    p99_e2e_seconds: float
+
+
+@dataclass
+class ContinuousLaneResult:
+    run_dir: Path
+    db_path: Path
+    records: List[RequestRecord]
 
 
 def find_evalscope_repo_root() -> Path | None:
@@ -78,36 +83,16 @@ def find_evalscope_repo_root() -> Path | None:
     return None
 
 
-def is_python_executable(path: Path) -> bool:
-    return path.name.lower().startswith('python')
-
-
-def resolve_evalscope_cmd(evalscope_bin: str) -> List[str]:
+def ensure_evalscope_on_path() -> Path:
     repo_root = find_evalscope_repo_root()
-    repo_venv_python = repo_root / '.venv' / 'bin' / 'python' if repo_root else None
-
-    if os.path.sep in evalscope_bin or evalscope_bin.startswith('.'):
-        resolved = Path(evalscope_bin).expanduser()
-        if not resolved.is_absolute():
-            resolved = resolved.resolve()
-        if is_python_executable(resolved):
-            return [str(resolved), '-m', 'evalscope.cli.cli']
-        return [str(resolved)]
-
-    if evalscope_bin == 'evalscope' and repo_venv_python and repo_venv_python.exists():
-        return [str(repo_venv_python), '-m', 'evalscope.cli.cli']
-
-    found = shutil.which(evalscope_bin)
-    if found:
-        found_path = Path(found)
-        if is_python_executable(found_path):
-            return [str(found_path), '-m', 'evalscope.cli.cli']
-        return [str(found_path)]
-
-    raise FileNotFoundError(
-        f'Cannot find EvalScope executable: {evalscope_bin}. '
-        'Pass --evalscope-bin explicitly or run this script from a workspace that contains the evalscope repo.'
-    )
+    if repo_root is None:
+        raise FileNotFoundError(
+            'Cannot find EvalScope repo. Run from a workspace that contains the evalscope repo.'
+        )
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return repo_root
 
 
 def sanitize_name(value: str) -> str:
@@ -126,148 +111,6 @@ def build_default_output_root(model_name: str) -> Path:
     return DEFAULT_OUTPUT_ROOT / f'{sanitize_name(model_name)}_{timestamp}'
 
 
-def replace_arg(cmd: List[str], flag: str, value: str) -> None:
-    idx = cmd.index(flag)
-    cmd[idx + 1] = value
-
-
-def build_common_args(args: argparse.Namespace, run_name: str, output_root: Path) -> List[str]:
-    cmd = [
-        *args.evalscope_cmd,
-        'perf',
-        '--model',
-        args.model,
-        '--url',
-        args.url,
-        '--api',
-        args.api,
-        '--parallel',
-        '1',
-        '--number',
-        '1',
-        '--max-tokens',
-        '1',
-        '--outputs-dir',
-        str(output_root),
-        '--name',
-        run_name,
-        '--stream' if args.stream else '--no-stream',
-        '--log-every-n-query',
-        str(args.log_every_n_query),
-    ]
-    if args.api_key is not None:
-        cmd.extend(['--api-key', args.api_key])
-    if args.no_test_connection:
-        cmd.append('--no-test-connection')
-    if args.connect_timeout is not None:
-        cmd.extend(['--connect-timeout', str(args.connect_timeout)])
-    if args.read_timeout is not None:
-        cmd.extend(['--read-timeout', str(args.read_timeout)])
-    if args.total_timeout is not None:
-        cmd.extend(['--total-timeout', str(args.total_timeout)])
-    if args.debug:
-        cmd.append('--debug')
-    return cmd
-
-
-def build_vl_cmd(args: argparse.Namespace, run_name: str, output_root: Path, parallel: int, number: int) -> List[str]:
-    cmd = build_common_args(args, run_name, output_root)
-    replace_arg(cmd, '--parallel', str(parallel))
-    replace_arg(cmd, '--number', str(number))
-    replace_arg(cmd, '--max-tokens', str(args.vl_output_tokens))
-    cmd.extend([
-        '--dataset',
-        'random_vl',
-        '--tokenizer-path',
-        args.vl_tokenizer_path,
-        '--min-prompt-length',
-        str(args.vl_min_prompt_length),
-        '--max-prompt-length',
-        str(args.vl_max_prompt_length),
-        '--prefix-length',
-        str(args.vl_prefix_length),
-        '--image-width',
-        str(args.image_width),
-        '--image-height',
-        str(args.image_height),
-        '--image-num',
-        str(args.image_num),
-        '--image-format',
-        args.image_format,
-    ])
-    return cmd
-
-
-def build_text_cmd(
-    args: argparse.Namespace,
-    run_name: str,
-    output_root: Path,
-    parallel: int,
-    number: int,
-) -> List[str]:
-    cmd = build_common_args(args, run_name, output_root)
-    replace_arg(cmd, '--parallel', str(parallel))
-    replace_arg(cmd, '--number', str(number))
-    replace_arg(cmd, '--max-tokens', str(args.text_output_tokens))
-    cmd.extend([
-        '--dataset',
-        'random',
-        '--tokenizer-path',
-        args.text_tokenizer_path,
-        '--min-prompt-length',
-        str(args.text_min_prompt_length),
-        '--max-prompt-length',
-        str(args.text_max_prompt_length),
-        '--prefix-length',
-        str(args.text_prefix_length),
-    ])
-    if args.text_tokenize_prompt:
-        cmd.append('--tokenize-prompt')
-    return cmd
-
-
-def run_job(name: str, cmd: Sequence[str], quiet: bool = False) -> int:
-    if not quiet:
-        print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
-    env = os.environ.copy()
-    repo_root = find_evalscope_repo_root()
-    existing_pythonpath = env.get('PYTHONPATH')
-    if repo_root:
-        env['PYTHONPATH'] = str(repo_root) if not existing_pythonpath else f'{repo_root}:{existing_pythonpath}'
-
-    proc = subprocess.Popen(
-        list(cmd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-        cwd=str(repo_root if repo_root else SCRIPT_DIR),
-    )
-    assert proc.stdout is not None
-    if quiet:
-        for _ in proc.stdout:
-            pass
-    else:
-        for line in proc.stdout:
-            print(f'[{name}] {line}', end='', flush=True)
-    return proc.wait()
-
-
-def find_named_run_dir(batch_output_root: Path, run_name: str) -> Path:
-    matches = [p for p in batch_output_root.rglob(run_name) if p.is_dir()]
-    if not matches:
-        raise FileNotFoundError(f'Cannot find run directory for {run_name} under {batch_output_root}')
-    return max(matches, key=lambda p: p.stat().st_mtime)
-
-
-def find_result_db(run_dir: Path) -> Path:
-    db_candidates = list(run_dir.rglob('benchmark_data.db'))
-    if not db_candidates:
-        raise FileNotFoundError(f'Cannot find benchmark_data.db under {run_dir}')
-    return max(db_candidates, key=lambda p: p.stat().st_mtime)
-
-
 def _to_optional_float(value) -> float | None:
     if value is None:
         return None
@@ -281,7 +124,7 @@ def load_requests_from_db(db_path: Path) -> List[RequestRecord]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            'SELECT start_time, completed_time, success, first_chunk_latency, '
+            'SELECT start_time, completed_time, success, latency, first_chunk_latency, '
             'time_per_output_token, completion_tokens FROM result'
         ).fetchall()
 
@@ -293,6 +136,7 @@ def load_requests_from_db(db_path: Path) -> List[RequestRecord]:
                 start_time=float(d.get('start_time') or 0.0),
                 completed_time=float(d.get('completed_time') or 0.0),
                 success=bool(d.get('success', 0)),
+                latency=_to_optional_float(d.get('latency')),
                 ttft=_to_optional_float(d.get('first_chunk_latency')),
                 tpot=_to_optional_float(d.get('time_per_output_token')),
                 completion_tokens=int(d.get('completion_tokens') or 0),
@@ -308,164 +152,115 @@ def mean(values: Iterable[float]) -> float:
     return statistics.fmean(vals)
 
 
-def safe_decay(final_value: float, initial_value: float, reverse: bool = False) -> float:
-    if initial_value == 0 or math.isnan(initial_value) or math.isnan(final_value):
+def percentile(values: Iterable[float], percent: float) -> float:
+    vals = sorted(v for v in values if v is not None and not math.isnan(v))
+    if not vals:
         return math.nan
-    if reverse:
-        return (initial_value - final_value) / initial_value * 100.0
-    return (final_value - initial_value) / initial_value * 100.0
+    if len(vals) == 1:
+        return vals[0]
+    rank = (len(vals) - 1) * percent / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return vals[int(rank)]
+    weight = rank - lower
+    return vals[lower] * (1.0 - weight) + vals[upper] * weight
 
 
-def summarize_batch(batch_index: int, records: List[RequestRecord]) -> BatchSummary:
-    ordered = sorted(records, key=lambda r: (r.completed_time, r.start_time))
-    success_records = [r for r in ordered if r.success]
-    total_requests = len(ordered)
+def _bucket_tps(
+    records: Sequence[RequestRecord],
+    window_start: float,
+    duration_seconds: float,
+    bucket_seconds: int = 60,
+) -> List[float]:
+    if duration_seconds <= 0:
+        return []
+    bucket_count = max(1, math.ceil(duration_seconds / bucket_seconds))
+    tokens_by_bucket = [0 for _ in range(bucket_count)]
+    for record in records:
+        if not record.success:
+            continue
+        offset = max(record.start_time - window_start, 0.0)
+        index = min(int(offset // bucket_seconds), bucket_count - 1)
+        tokens_by_bucket[index] += max(record.completion_tokens, 0)
+
+    rates: List[float] = []
+    for index, token_count in enumerate(tokens_by_bucket):
+        bucket_start = index * bucket_seconds
+        bucket_end = min((index + 1) * bucket_seconds, duration_seconds)
+        bucket_duration = max(bucket_end - bucket_start, 0.0)
+        if bucket_duration > 0:
+            rates.append(token_count / bucket_duration)
+    return rates
+
+
+def summarize_time_window(
+    label: str,
+    records: Sequence[RequestRecord],
+    base_start: float,
+    start_offset_seconds: float,
+    end_offset_seconds: float,
+) -> WindowSummary:
+    total_requests = len(records)
+    success_records = [r for r in records if r.success]
     success_requests = len(success_records)
     failed_requests = total_requests - success_requests
     success_rate = (success_requests / total_requests * 100.0) if total_requests else math.nan
 
-    if success_records:
-        start_ts = min(r.start_time for r in success_records)
-        end_ts = max(r.completed_time for r in success_records)
-        duration = max(end_ts - start_ts, 0.0)
-        ttft_values = [r.ttft for r in success_records if r.ttft is not None]
-        tpot_values = [r.tpot for r in success_records if r.tpot is not None]
-        ttft_sum = sum(ttft_values)
-        tpot_sum = sum(tpot_values)
-        ttft_count = len(ttft_values)
-        tpot_count = len(tpot_values)
-        avg_ttft = (ttft_sum / ttft_count) if ttft_count else math.nan
-        avg_tpot = (tpot_sum / tpot_count) if tpot_count else math.nan
-        total_tokens = sum(max(r.completion_tokens, 0) for r in success_records)
-        avg_tps = (total_tokens / duration) if duration > 0 else math.nan
-    else:
-        start_ts = min((r.start_time for r in ordered), default=math.nan)
-        max_completed = max((r.completed_time for r in ordered if r.completed_time > 0), default=math.nan)
-        max_started = max((r.start_time for r in ordered), default=math.nan)
-        if math.isnan(max_completed) or max_completed < start_ts:
-            end_ts = max_started
-        else:
-            end_ts = max_completed
-        duration = max(end_ts - start_ts, 0.0) if not math.isnan(start_ts) and not math.isnan(end_ts) else math.nan
-        ttft_sum = 0.0
-        tpot_sum = 0.0
-        ttft_count = 0
-        tpot_count = 0
-        avg_ttft = math.nan
-        avg_tpot = math.nan
-        avg_tps = math.nan
+    ttft_values = [r.ttft for r in success_records if r.ttft is not None]
+    tpot_values = [r.tpot for r in success_records if r.tpot is not None]
+    e2e_values = [r.latency for r in success_records if r.latency is not None]
+    fallback_duration = max(end_offset_seconds - start_offset_seconds, 0.0)
+    duration = fallback_duration
+    total_tokens = sum(max(r.completion_tokens, 0) for r in success_records)
+    avg_tps = (total_tokens / duration) if duration > 0 else math.nan
+    bucket_tps = _bucket_tps(success_records, base_start + start_offset_seconds, fallback_duration)
 
-    return BatchSummary(
-        batch_index=batch_index,
+    return WindowSummary(
+        label=label,
+        start_offset_seconds=start_offset_seconds,
+        end_offset_seconds=end_offset_seconds,
         duration_seconds=duration,
         total_requests=total_requests,
         success_requests=success_requests,
         failed_requests=failed_requests,
         success_rate_percent=success_rate,
-        ttft_sum_seconds=ttft_sum,
-        ttft_count=ttft_count,
-        tpot_sum_seconds=tpot_sum,
-        tpot_count=tpot_count,
-        avg_ttft_seconds=avg_ttft,
-        avg_tpot_seconds=avg_tpot,
+        avg_ttft_seconds=mean(ttft_values),
+        p99_ttft_seconds=percentile(ttft_values, 99),
+        avg_tpot_seconds=mean(tpot_values),
+        p99_tpot_seconds=percentile(tpot_values, 99),
         avg_tps=avg_tps,
+        p99_tps=percentile(bucket_tps, 99),
+        avg_e2e_seconds=mean(e2e_values),
+        p99_e2e_seconds=percentile(e2e_values, 99),
     )
 
 
-def choose_window_batch_count(total_batches: int) -> int:
-    if total_batches <= 3:
-        return 0
-    candidates = [
-        k for k in range(1, total_batches // 2 + 1)
-        if 0.15 <= (k / total_batches) <= 0.25
-    ]
-    if candidates:
-        target = total_batches * 0.2
-        return min(candidates, key=lambda k: (abs(k - target), k))
-    return 1
+def summarize_time_windows(records: Sequence[RequestRecord], duration_minutes: float, window_minutes: float) -> dict:
+    ordered = sorted(records, key=lambda r: (r.start_time, r.completed_time))
+    target_seconds = duration_minutes * 60.0
+    window_seconds = window_minutes * 60.0
+    window_count = max(1, math.ceil(target_seconds / window_seconds))
+    base_start = min((r.start_time for r in ordered), default=time.time())
 
+    windows: List[WindowSummary] = []
+    for index in range(window_count):
+        start_offset = index * window_seconds
+        end_offset = min((index + 1) * window_seconds, target_seconds)
+        window_start = base_start + start_offset
+        window_end = base_start + end_offset
+        window_records = [r for r in ordered if window_start <= r.start_time < window_end]
+        label = f'{format_duration(start_offset)}-{format_duration(end_offset)}'
+        windows.append(summarize_time_window(label, window_records, base_start, start_offset, end_offset))
 
-def summarize_batch_window(batches: Sequence[BatchSummary]) -> dict:
-    total_requests = sum(batch.total_requests for batch in batches)
-    success_requests = sum(batch.success_requests for batch in batches)
-    failed_requests = sum(batch.failed_requests for batch in batches)
-    success_rate = (success_requests / total_requests * 100.0) if total_requests else math.nan
-    ttft_sum = sum(batch.ttft_sum_seconds for batch in batches)
-    ttft_count = sum(batch.ttft_count for batch in batches)
-    tpot_sum = sum(batch.tpot_sum_seconds for batch in batches)
-    tpot_count = sum(batch.tpot_count for batch in batches)
-    total_duration = sum(
-        batch.duration_seconds for batch in batches if batch.duration_seconds is not None and not math.isnan(batch.duration_seconds)
-    )
+    overall = summarize_time_window('24h Overall', ordered, base_start, 0.0, target_seconds)
     return {
-        'batch_indexes': [batch.batch_index for batch in batches],
-        'batch_count': len(batches),
-        'duration_seconds': total_duration,
-        'total_requests': total_requests,
-        'success_requests': success_requests,
-        'failed_requests': failed_requests,
-        'success_rate_percent': success_rate,
-        'avg_ttft_seconds': (ttft_sum / ttft_count) if ttft_count else math.nan,
-        'avg_tpot_seconds': (tpot_sum / tpot_count) if tpot_count else math.nan,
-        'avg_tps': mean(batch.avg_tps for batch in batches if not math.isnan(batch.avg_tps)),
-    }
-
-
-def analyze_batches(batch_summaries: Sequence[BatchSummary]) -> dict:
-    total_batches = len(batch_summaries)
-    overall = summarize_batch_window(batch_summaries)
-    window_batch_count = choose_window_batch_count(total_batches)
-
-    if window_batch_count == 0:
-        note = (
-            f'批次数为 {total_batches}，不超过 3，按前后批次对比没有统计意义，因此仅展示整体汇总，不计算衰减。'
-        )
-        empty_window = {
-            'batch_indexes': [],
-            'batch_count': 0,
-            'duration_seconds': math.nan,
-            'total_requests': 0,
-            'success_requests': 0,
-            'failed_requests': 0,
-            'success_rate_percent': math.nan,
-            'avg_ttft_seconds': math.nan,
-            'avg_tpot_seconds': math.nan,
-            'avg_tps': math.nan,
-        }
-        return {
-            'comparable': False,
-            'note': note,
-            'total_batches': total_batches,
-            'window_batch_count': 0,
-            'overall': overall,
-            'early_window': empty_window,
-            'late_window': empty_window,
-            'ttft_decay_rate_percent': math.nan,
-            'tpot_decay_rate_percent': math.nan,
-            'tps_decay_rate_percent': math.nan,
-        }
-
-    early_batches = list(batch_summaries[:window_batch_count])
-    late_batches = list(batch_summaries[-window_batch_count:])
-    early_window = summarize_batch_window(early_batches)
-    late_window = summarize_batch_window(late_batches)
-    return {
-        'comparable': True,
-        'note': f'按批次统计：前 {window_batch_count} 个批次 vs 后 {window_batch_count} 个批次。',
-        'total_batches': total_batches,
-        'window_batch_count': window_batch_count,
-        'overall': overall,
-        'early_window': early_window,
-        'late_window': late_window,
-        'ttft_decay_rate_percent': safe_decay(
-            late_window['avg_ttft_seconds'], early_window['avg_ttft_seconds'], reverse=False
-        ),
-        'tpot_decay_rate_percent': safe_decay(
-            late_window['avg_tpot_seconds'], early_window['avg_tpot_seconds'], reverse=False
-        ),
-        'tps_decay_rate_percent': safe_decay(
-            late_window['avg_tps'], early_window['avg_tps'], reverse=False
-        ),
+        'window_minutes': window_minutes,
+        'target_duration_minutes': duration_minutes,
+        'window_count': window_count,
+        'base_start': base_start,
+        'windows': [window.__dict__ for window in windows],
+        'overall': overall.__dict__,
     }
 
 
@@ -475,12 +270,6 @@ def format_float(value: float, digits: int = 4, percent: bool = False) -> str:
     if percent:
         return f'{value:.2f}%'
     return f'{value:.{digits}f}'
-
-
-def format_seconds(value: float) -> str:
-    if value is None or math.isnan(value):
-        return 'N/A'
-    return f'{value:.2f}s'
 
 
 def format_duration(seconds: float) -> str:
@@ -500,124 +289,289 @@ def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> Lis
     ]
 
 
-def three_line_rows(analysis: dict) -> List[List[str]]:
+def format_metric_cell(avg_value: float, p99_value: float, digits: int = 4, suffix: str = '') -> str:
+    return f'avg={format_float(avg_value, digits=digits)}{suffix} / p99={format_float(p99_value, digits=digits)}{suffix}'
+
+
+def window_table_headers(time_analysis: dict) -> List[str]:
+    headers = ['指标']
+    headers.extend(window['label'] for window in time_analysis['windows'])
+    headers.append('24h Overall')
+    return headers
+
+
+def window_metric_rows(time_analysis: dict) -> List[List[str]]:
+    windows = list(time_analysis['windows'])
+    overall = time_analysis['overall']
+    series = windows + [overall]
     return [
         [
-            '长周期',
-            format_duration(analysis['overall']['duration_seconds']),
-            str(analysis['overall']['total_requests']),
-            format_float(analysis['overall']['success_rate_percent'], digits=2, percent=True),
+            'TTFT(s)',
+            *(format_metric_cell(item['avg_ttft_seconds'], item['p99_ttft_seconds']) for item in series),
         ],
         [
-            'TTFT 衰减',
-            format_seconds(analysis['early_window']['avg_ttft_seconds']),
-            format_seconds(analysis['late_window']['avg_ttft_seconds']),
-            format_float(analysis['ttft_decay_rate_percent'], digits=2, percent=True),
+            'TPOT(s)',
+            *(format_metric_cell(item['avg_tpot_seconds'], item['p99_tpot_seconds']) for item in series),
         ],
         [
-            'TPOT 衰减',
-            format_seconds(analysis['early_window']['avg_tpot_seconds']),
-            format_seconds(analysis['late_window']['avg_tpot_seconds']),
-            format_float(analysis['tpot_decay_rate_percent'], digits=2, percent=True),
+            'TPS(tok/s)',
+            *(format_metric_cell(item['avg_tps'], item['p99_tps']) for item in series),
         ],
         [
-            'TPS 衰减',
-            format_float(analysis['early_window']['avg_tps'], digits=4),
-            format_float(analysis['late_window']['avg_tps'], digits=4),
-            format_float(analysis['tps_decay_rate_percent'], digits=2, percent=True),
+            'E2E(s)',
+            *(format_metric_cell(item['avg_e2e_seconds'], item['p99_e2e_seconds']) for item in series),
         ],
     ]
 
 
-def run_lane_pair(batch_index: int, args: argparse.Namespace, output_root: Path) -> dict:
-    batch_root = output_root / 'batches' / f'batch_{batch_index:04d}'
-    batch_root.mkdir(parents=True, exist_ok=True)
-    vl_name = f'vl_batch_{batch_index:04d}'
-    text_name = f'text_batch_{batch_index:04d}'
-
-    vl_cmd = build_vl_cmd(args, vl_name, batch_root, args.vl_parallel, args.vl_number)
-    text_cmd = build_text_cmd(args, text_name, batch_root, args.text_parallel, args.text_number)
-
-    results: Dict[str, int] = {}
-    errors: Dict[str, str] = {}
-    lock = threading.Lock()
-
-    def target(name: str, cmd: List[str]) -> None:
-        try:
-            rc = run_job(name, cmd)
-        except Exception as exc:
-            rc = 1
-            with lock:
-                errors[name] = str(exc)
-            print(f'[{name}] unexpected error: {exc}', file=sys.stderr, flush=True)
-        with lock:
-            results[name] = rc
-
-    threads = [
-        threading.Thread(target=target, args=(f'VL-{batch_index:04d}', vl_cmd), daemon=False),
-        threading.Thread(target=target, args=(f'TEXT-{batch_index:04d}', text_cmd), daemon=False),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    failed = {name: rc for name, rc in results.items() if rc != 0}
-    if failed:
-        raise RuntimeError(f'Failed lane batch jobs: {failed}, errors={errors}')
-
-    vl_run_dir = find_named_run_dir(batch_root, vl_name)
-    text_run_dir = find_named_run_dir(batch_root, text_name)
-    vl_db = find_result_db(vl_run_dir)
-    text_db = find_result_db(text_run_dir)
-    return {
-        'vl_run_dir': vl_run_dir,
-        'text_run_dir': text_run_dir,
-        'vl_db': vl_db,
-        'text_db': text_db,
-    }
-
-
-def run_warmup(args: argparse.Namespace, output_root: Path) -> None:
-    if not args.enable_warmup:
-        return
-    with tempfile.TemporaryDirectory(prefix='evalscope_mixed_stability_warmup_') as warmup_dir:
-        warmup_root = Path(warmup_dir)
-        vl_name = 'vl_batch_0000'
-        text_name = 'text_batch_0000'
-        vl_cmd = build_vl_cmd(args, vl_name, warmup_root, args.vl_parallel, args.vl_number)
-        text_cmd = build_text_cmd(args, text_name, warmup_root, args.text_parallel, args.text_number)
-
-        results: Dict[str, int] = {}
-        errors: Dict[str, str] = {}
-        lock = threading.Lock()
-
-        def target(name: str, cmd: List[str]) -> None:
-            try:
-                rc = run_job(name, cmd, quiet=True)
-            except Exception as exc:
-                rc = 1
-                with lock:
-                    errors[name] = str(exc)
-            with lock:
-                results[name] = rc
-
-        threads = [
-            threading.Thread(target=target, args=('VL-WARMUP', vl_cmd), daemon=False),
-            threading.Thread(target=target, args=('TEXT-WARMUP', text_cmd), daemon=False),
+def success_rate_row(time_analysis: dict) -> List[List[str]]:
+    series = list(time_analysis['windows']) + [time_analysis['overall']]
+    return [
+        [
+            '请求成功率',
+            *(format_float(item['success_rate_percent'], digits=2, percent=True) for item in series),
         ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+    ]
 
-        if len(results) != 2:
-            raise RuntimeError(f'Warmup only collected partial results: {results}')
-        if errors:
-            raise RuntimeError(f'Warmup thread errors: {errors}')
-        failed = {name: rc for name, rc in results.items() if rc != 0}
-        if failed:
-            raise RuntimeError(f'Warmup failed jobs: {failed}')
+
+def request_count_row(time_analysis: dict) -> List[List[str]]:
+    series = list(time_analysis['windows']) + [time_analysis['overall']]
+    return [
+        [
+            '请求数',
+            *(f'{item["success_requests"]}/{item["total_requests"]}' for item in series),
+        ]
+    ]
+
+
+def print_analysis_tables(time_analysis: dict) -> None:
+    headers = window_table_headers(time_analysis)
+    rows = window_metric_rows(time_analysis)
+    success_rows = success_rate_row(time_analysis)
+    print('\nMixed stability window metrics:', flush=True)
+    for line in markdown_table(headers, rows):
+        print(line, flush=True)
+    print('\nMixed stability success rate:', flush=True)
+    for line in markdown_table(headers, success_rows):
+        print(line, flush=True)
+
+
+def _first_scalar(value):
+    if isinstance(value, list):
+        return value[0]
+    return value
+
+
+def build_evalscope_lane_args(args: argparse.Namespace, lane: str, run_dir: Path):
+    ensure_evalscope_on_path()
+    from evalscope.perf.arguments import Arguments
+
+    if lane == 'vl':
+        lane_args = Arguments(
+            model=args.model,
+            url=args.url,
+            api=args.api,
+            api_key=args.api_key,
+            tokenizer_path=args.vl_tokenizer_path,
+            outputs_dir=str(run_dir),
+            no_timestamp=True,
+            name='vl_continuous',
+            dataset='random_vl',
+            parallel=args.vl_parallel,
+            number=args.vl_number,
+            max_prompt_length=args.vl_max_prompt_length,
+            min_prompt_length=args.vl_min_prompt_length,
+            prefix_length=args.vl_prefix_length,
+            max_tokens=args.vl_output_tokens,
+            image_width=args.image_width,
+            image_height=args.image_height,
+            image_num=args.image_num,
+            image_format=args.image_format,
+            stream=args.stream,
+            no_test_connection=args.no_test_connection,
+            connect_timeout=args.connect_timeout,
+            read_timeout=args.read_timeout,
+            total_timeout=args.total_timeout,
+            log_every_n_query=args.log_every_n_query,
+            debug=args.debug,
+        )
+    else:
+        lane_args = Arguments(
+            model=args.model,
+            url=args.url,
+            api=args.api,
+            api_key=args.api_key,
+            tokenizer_path=args.text_tokenizer_path,
+            outputs_dir=str(run_dir),
+            no_timestamp=True,
+            name='text_continuous',
+            dataset='random',
+            parallel=args.text_parallel,
+            number=args.text_number,
+            max_prompt_length=args.text_max_prompt_length,
+            min_prompt_length=args.text_min_prompt_length,
+            prefix_length=args.text_prefix_length,
+            max_tokens=args.text_output_tokens,
+            tokenize_prompt=args.text_tokenize_prompt,
+            stream=args.stream,
+            no_test_connection=args.no_test_connection,
+            connect_timeout=args.connect_timeout,
+            read_timeout=args.read_timeout,
+            total_timeout=args.total_timeout,
+            log_every_n_query=args.log_every_n_query,
+            debug=args.debug,
+        )
+
+    lane_args.parallel = _first_scalar(lane_args.parallel)
+    lane_args.number = _first_scalar(lane_args.number)
+    return lane_args
+
+
+def build_request_pool(lane_args, api_plugin) -> List[dict]:
+    from evalscope.perf.plugin import DatasetRegistry
+    from evalscope.perf.utils.db_util import load_prompt
+
+    if lane_args.prompt:
+        prompt = load_prompt(lane_args.prompt)
+        messages = [{'role': 'user', 'content': prompt}] if lane_args.apply_chat_template else prompt
+        request = api_plugin.build_request(messages)
+        return [request]
+
+    message_generator = DatasetRegistry.get_class(lane_args.dataset)(lane_args)
+    requests: List[dict] = []
+    for messages in message_generator.build_messages():
+        request = api_plugin.build_request(messages)
+        if request is not None:
+            requests.append(request)
+        if len(requests) >= lane_args.number:
+            break
+
+    if not requests:
+        raise ValueError(f'No requests generated for dataset {lane_args.dataset}')
+    return requests
+
+
+async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asyncio.Event, lane_args, api_plugin) -> Tuple[object, Path]:
+    from evalscope.perf.utils.benchmark_util import MetricsAccumulator
+    from evalscope.perf.utils.db_util import create_result_table, get_result_db_path, insert_benchmark_data
+
+    accumulator = MetricsAccumulator(concurrency=lane_args.parallel, rate=lane_args.rate)
+    db_path = Path(get_result_db_path(lane_args))
+    commit_every = lane_args.db_commit_interval
+    processed_since_commit = 0
+
+    with sqlite3.connect(db_path, check_same_thread=False) as con:
+        cursor = con.cursor()
+        create_result_table(cursor)
+        while not (done_event.is_set() and queue.empty()):
+            try:
+                benchmark_data = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+
+            accumulator.update(benchmark_data, api_plugin)
+            insert_benchmark_data(cursor, benchmark_data)
+            processed_since_commit += 1
+            if processed_since_commit >= commit_every:
+                await asyncio.to_thread(con.commit)
+                processed_since_commit = 0
+
+            if int(accumulator.n_total) % lane_args.log_every_n_query == 0:
+                message = accumulator.to_result().create_message(api_type=lane_args.api)
+                print(f'[{lane_args.name}] {json.dumps(message, ensure_ascii=False)}', flush=True)
+
+            queue.task_done()
+
+        await asyncio.to_thread(con.commit)
+
+    return accumulator.to_result(), db_path
+
+
+async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: Path, target_seconds: float) -> ContinuousLaneResult:
+    ensure_evalscope_on_path()
+    from evalscope.perf.http_client import AioHttpClient, test_connection
+    from evalscope.perf.plugin import ApiRegistry
+    from evalscope.perf.utils.benchmark_util import Metrics
+    from evalscope.perf.utils.db_util import summary_result
+
+    run_dir = output_root / 'continuous' / lane
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lane_args = build_evalscope_lane_args(args, lane, run_dir)
+    api_plugin = ApiRegistry.get_class(lane_args.api)(lane_args)
+
+    if not Metrics.is_embedding_or_rerank(lane_args.api) and not lane_args.no_test_connection:
+        ok = await test_connection(lane_args, api_plugin)
+        if not ok:
+            raise TimeoutError(f'{lane} connection test failed')
+
+    requests = build_request_pool(lane_args, api_plugin)
+    print(
+        f'[{lane}] continuous run: parallel={lane_args.parallel}, sample_pool={len(requests)}, '
+        f'target={format_duration(target_seconds)}, output={run_dir}',
+        flush=True,
+    )
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, lane_args.parallel * lane_args.queue_size_multiplier))
+    done_event = asyncio.Event()
+    writer_task = asyncio.create_task(write_continuous_lane_results(queue, done_event, lane_args, api_plugin))
+
+    async def post_request(semaphore, client, request):
+        async with semaphore:
+            benchmark_data = await client.post(request)
+        benchmark_data.update_gpu_usage()
+        await queue.put(benchmark_data)
+
+    scheduled = 0
+    request_index = 0
+    started_at = time.time()
+    semaphore = asyncio.Semaphore(lane_args.parallel)
+    in_flight: set[asyncio.Task] = set()
+    max_in_flight = max(1, lane_args.parallel * lane_args.in_flight_task_multiplier)
+
+    client = AioHttpClient(lane_args, api_plugin)
+    async with client:
+        while time.time() - started_at < target_seconds:
+            if len(in_flight) >= max_in_flight:
+                done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                in_flight = pending
+                for task in done:
+                    exc = task.exception()
+                    if exc:
+                        raise exc
+
+            request = requests[request_index % len(requests)]
+            request_index += 1
+            scheduled += 1
+            in_flight.add(asyncio.create_task(post_request(semaphore, client, request)))
+
+            if lane_args.rate != -1:
+                import numpy as np
+                interval = np.random.exponential(1.0 / lane_args.rate)
+                await asyncio.sleep(interval)
+
+        print(f'[{lane}] duration reached; stop scheduling new requests, waiting for {len(in_flight)} in-flight tasks', flush=True)
+
+        if in_flight:
+            results = await asyncio.gather(*in_flight, return_exceptions=True)
+            failures = [result for result in results if isinstance(result, Exception)]
+            if failures:
+                raise RuntimeError(f'{lane} in-flight request failures: {failures[:3]}')
+
+    await queue.join()
+    done_event.set()
+    metrics, db_path = await writer_task
+    summary_result(lane_args, metrics, str(db_path))
+    records = load_requests_from_db(db_path)
+    print(f'[{lane}] scheduled={scheduled}, recorded={len(records)}, db={db_path}', flush=True)
+    return ContinuousLaneResult(run_dir=run_dir, db_path=db_path, records=records)
+
+
+async def run_continuous_mixed(args: argparse.Namespace, output_root: Path) -> Tuple[ContinuousLaneResult, ContinuousLaneResult]:
+    target_seconds = args.duration_minutes * 60.0
+    vl_task = asyncio.create_task(run_continuous_lane('vl', args, output_root, target_seconds))
+    text_task = asyncio.create_task(run_continuous_lane('text', args, output_root, target_seconds))
+    vl_result, text_result = await asyncio.gather(vl_task, text_task)
+    return vl_result, text_result
 
 
 def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> None:
@@ -626,9 +580,11 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         encoding='utf-8',
     )
 
-    combined = meta['analysis']['combined']
-    text_lane = meta['analysis']['text_lane']
-    vl_lane = meta['analysis']['vl_lane']
+    time_analysis = meta['time_window_analysis']
+    headers = window_table_headers(time_analysis)
+    metric_rows = window_metric_rows(time_analysis)
+    success_rows = success_rate_row(time_analysis)
+    count_rows = request_count_row(time_analysis)
 
     lines = [
         '# EvalScope Mixed Stability Perf Report',
@@ -637,43 +593,38 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         f'- Model: {args.model}',
         f'- URL: {args.url}',
         f'- Target Duration: {args.duration_minutes:.2f}m',
+        f'- Window Minutes: {args.window_minutes:.2f}m',
         f'- Output Root: {output_root}',
         '',
-        '## Combined',
+        '## Combined Window Metrics',
         '',
-        *markdown_table(['项目', '初值/时长', '末值/请求数', '结果'], three_line_rows(combined)),
+        *markdown_table(headers, metric_rows),
         '',
-        '## Text Lane',
+        '## Request Success Rate',
         '',
-        *markdown_table(['项目', '初值/时长', '末值/请求数', '结果'], three_line_rows(text_lane)),
+        *markdown_table(headers, success_rows),
         '',
-        '## VL Lane',
+        '## Request Counts',
         '',
-        *markdown_table(['项目', '初值/时长', '末值/请求数', '结果'], three_line_rows(vl_lane)),
+        *markdown_table(headers, count_rows),
         '',
         '## 说明',
         '',
-        '- Combined 为两路请求明细按批次合并后的整体稳定性结果。',
-        '- 长周期时长为各批次有效执行时长之和，不包含批次切换空档。',
-        '- TTFT/TPOT/TPS 衰减按批次统计，比较前后相同数量的批次。',
-        '- 当总批次数不超过 3 时，不进行前后批次衰减统计，只输出整体汇总。',
-        f'- Combined: {combined["note"]}',
-        f'- Text Lane: {text_lane["note"]}',
-        f'- VL Lane: {vl_lane["note"]}',
+        '- 表格只统计图文和纯文本合并后的整体数据，不区分请求类型。',
+        '- TTFT、TPOT、E2E 统计成功请求的 avg 和 p99。',
+        '- TPS avg = 时间段内成功请求 completion_tokens 总数 / 时间窗口时长。',
+        '- TPS p99 = 时间段内按 1 分钟 bucket 计算 token/s 后取 p99。',
+        '- 到达目标时长后停止调度新请求，并等待已发出的 in-flight 请求完成。',
+        f'- VL DB: {meta["vl_db_paths"][0]}',
+        f'- Text DB: {meta["text_db_paths"][0]}',
     ]
     (output_root / 'mixed_stability_report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
     tsv_lines = [
-        'scope\tmetric\tvalue_1\tvalue_2\tvalue_3',
+        'metric\t' + '\t'.join(headers[1:]),
     ]
-    for scope, analysis in (
-        ('combined', combined),
-        ('text_lane', text_lane),
-        ('vl_lane', vl_lane),
-    ):
-        rows = three_line_rows(analysis)
-        for row in rows:
-            tsv_lines.append(f'{scope}\t{row[0]}\t{row[1]}\t{row[2]}\t{row[3]}')
+    for row in metric_rows + success_rows + count_rows:
+        tsv_lines.append('\t'.join(row))
     (output_root / 'mixed_stability_report.tsv').write_text('\n'.join(tsv_lines) + '\n', encoding='utf-8')
 
 
@@ -685,7 +636,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--url', required=True)
     parser.add_argument('--api-key', nargs='?', const='', default=os.getenv('OPENAI_API_KEY'))
     parser.add_argument('--api', default='openai')
-    parser.add_argument('--evalscope-bin', default='evalscope')
     parser.add_argument('--tokenizer-path', required=True)
     parser.add_argument('--output-root', default=None)
     parser.add_argument(
@@ -693,6 +643,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=24.0 * 60.0,
         help='Target benchmark duration in minutes.',
+    )
+    parser.add_argument(
+        '--window-minutes',
+        type=float,
+        default=120.0,
+        help='Analysis window size in minutes. Default 120 minutes, producing 12 windows for a 24h run.',
     )
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--no-test-connection', action='store_true', default=False)
@@ -702,7 +658,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
 
-    parser.add_argument('--enable-warmup', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        '--parallel',
+        type=int,
+        default=None,
+        help='Total mixed concurrency. Must be a positive multiple of 4; split as 1/4 multimodal and 3/4 text-only.',
+    )
     parser.add_argument('--vl-parallel', type=int, default=2)
     parser.add_argument('--vl-number', type=int, default=100)
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
@@ -727,7 +688,19 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.duration_minutes <= 0:
         parser.error('--duration-minutes must be > 0')
-    args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
+    if args.window_minutes <= 0:
+        parser.error('--window-minutes must be > 0')
+    if args.parallel is not None:
+        if args.parallel <= 0:
+            parser.error('--parallel must be a positive integer')
+        if args.parallel % 4 != 0:
+            parser.error('--parallel must be a multiple of 4 so multimodal:text-only concurrency can be split 1:3')
+        args.vl_parallel = args.parallel // 4
+        args.text_parallel = args.parallel * 3 // 4
+    if args.vl_number <= 0:
+        parser.error('--vl-number must be > 0')
+    if args.text_number <= 0:
+        parser.error('--text-number must be > 0')
     if not args.output_root:
         args.output_root = str(build_default_output_root(args.model))
     if not args.vl_tokenizer_path:
@@ -742,50 +715,17 @@ def main() -> int:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    run_warmup(args, output_root)
-
     target_seconds = args.duration_minutes * 60.0
-    started_at = time.time()
-    batch_index = 0
-
-    vl_db_paths: List[str] = []
-    text_db_paths: List[str] = []
-    vl_run_dirs: List[str] = []
-    text_run_dirs: List[str] = []
-    combined_batches: List[BatchSummary] = []
-    text_batches: List[BatchSummary] = []
-    vl_batches: List[BatchSummary] = []
-
-    while True:
-        elapsed = time.time() - started_at
-        if batch_index > 0 and elapsed >= target_seconds:
-            break
-
-        batch_index += 1
-        batch_result = run_lane_pair(batch_index, args, output_root)
-        vl_run_dirs.append(str(batch_result['vl_run_dir']))
-        text_run_dirs.append(str(batch_result['text_run_dir']))
-        vl_db_paths.append(str(batch_result['vl_db']))
-        text_db_paths.append(str(batch_result['text_db']))
-        vl_records = load_requests_from_db(batch_result['vl_db'])
-        text_records = load_requests_from_db(batch_result['text_db'])
-        vl_batches.append(summarize_batch(batch_index, vl_records))
-        text_batches.append(summarize_batch(batch_index, text_records))
-        combined_batches.append(summarize_batch(batch_index, vl_records + text_records))
-
-        elapsed = time.time() - started_at
+    if args.parallel is not None:
         print(
-            f'[progress] batch={batch_index}, elapsed={format_duration(elapsed)}, '
-            f'target={format_duration(target_seconds)}, text_requests={text_batches[-1].total_requests}, '
-            f'vl_requests={vl_batches[-1].total_requests}',
+            f'Total concurrency {args.parallel}: VL={args.vl_parallel}, TEXT={args.text_parallel}',
             flush=True,
         )
+    print(f'Continuous mixed stability target: {format_duration(target_seconds)}', flush=True)
 
-    analysis = {
-        'combined': analyze_batches(combined_batches),
-        'text_lane': analyze_batches(text_batches),
-        'vl_lane': analyze_batches(vl_batches),
-    }
+    vl_result, text_result = asyncio.run(run_continuous_mixed(args, output_root))
+    combined_records = vl_result.records + text_result.records
+    time_window_analysis = summarize_time_windows(combined_records, args.duration_minutes, args.window_minutes)
 
     meta = {
         'generated_at': dt.datetime.now().isoformat(timespec='seconds'),
@@ -793,10 +733,12 @@ def main() -> int:
         'url': args.url,
         'api': args.api,
         'target_duration_minutes': args.duration_minutes,
-        'batch_count': batch_index,
+        'window_minutes': args.window_minutes,
+        'execution_mode': 'continuous',
+        'summary_count': time_window_analysis['window_count'],
         'vl_config': {
             'parallel': args.vl_parallel,
-            'number_per_batch': args.vl_number,
+            'sample_pool_size': args.vl_number,
             'min_prompt_length': args.vl_min_prompt_length,
             'max_prompt_length': args.vl_max_prompt_length,
             'output_tokens': args.vl_output_tokens,
@@ -807,32 +749,20 @@ def main() -> int:
         },
         'text_config': {
             'parallel': args.text_parallel,
-            'number_per_batch': args.text_number,
+            'sample_pool_size': args.text_number,
             'min_prompt_length': args.text_min_prompt_length,
             'max_prompt_length': args.text_max_prompt_length,
             'output_tokens': args.text_output_tokens,
         },
-        'vl_run_dirs': vl_run_dirs,
-        'text_run_dirs': text_run_dirs,
-        'vl_db_paths': vl_db_paths,
-        'text_db_paths': text_db_paths,
-        'combined_batch_summaries': [batch.__dict__ for batch in combined_batches],
-        'text_batch_summaries': [batch.__dict__ for batch in text_batches],
-        'vl_batch_summaries': [batch.__dict__ for batch in vl_batches],
-        'analysis': analysis,
+        'vl_run_dirs': [str(vl_result.run_dir)],
+        'text_run_dirs': [str(text_result.run_dir)],
+        'vl_db_paths': [str(vl_result.db_path)],
+        'text_db_paths': [str(text_result.db_path)],
+        'time_window_analysis': time_window_analysis,
     }
     write_reports(output_root, args, meta)
 
-    print('\nMixed stability summary:', flush=True)
-    for scope in ('combined', 'text_lane', 'vl_lane'):
-        item = analysis[scope]
-        print(
-            f'  {scope}: duration={format_duration(item["overall"]["duration_seconds"])}, '
-            f'requests={item["overall"]["total_requests"]}, success_rate={format_float(item["overall"]["success_rate_percent"], digits=2, percent=True)}, '
-            f'ttft_decay={format_float(item["ttft_decay_rate_percent"], digits=2, percent=True)}, '
-            f'tps_decay={format_float(item["tps_decay_rate_percent"], digits=2, percent=True)}',
-            flush=True,
-        )
+    print_analysis_tables(time_window_analysis)
     print(f'Reports written to: {output_root}', flush=True)
     return 0
 
