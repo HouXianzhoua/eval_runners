@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import math
 import os
+import random
 import sqlite3
 import statistics
 import sys
@@ -71,6 +72,15 @@ class ContinuousLaneResult:
     records: List[RequestRecord]
 
 
+@dataclass
+class WarmupLaneResult:
+    lane: str
+    total_requests: int
+    success_requests: int
+    failed_requests: int
+    duration_seconds: float
+
+
 def find_evalscope_repo_root() -> Path | None:
     candidates = [
         SCRIPT_DIR,
@@ -89,6 +99,13 @@ def ensure_evalscope_on_path() -> Path:
         raise FileNotFoundError(
             'Cannot find EvalScope repo. Run from a workspace that contains the evalscope repo.'
         )
+    venv_site_packages = (
+        repo_root / '.venv' / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
+    )
+    if venv_site_packages.exists():
+        venv_site_packages_str = str(venv_site_packages)
+        if venv_site_packages_str not in sys.path:
+            sys.path.insert(0, venv_site_packages_str)
     repo_root_str = str(repo_root)
     if repo_root_str not in sys.path:
         sys.path.insert(0, repo_root_str)
@@ -109,6 +126,15 @@ def sanitize_name(value: str) -> str:
 def build_default_output_root(model_name: str) -> Path:
     timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
     return DEFAULT_OUTPUT_ROOT / f'{sanitize_name(model_name)}_{timestamp}'
+
+
+def ensure_process_tmpdir(output_root: Path) -> None:
+    tmp_dir = output_root / '.tmp'
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir_str = str(tmp_dir)
+    os.environ.setdefault('TMPDIR', tmp_dir_str)
+    os.environ.setdefault('TEMP', tmp_dir_str)
+    os.environ.setdefault('TMP', tmp_dir_str)
 
 
 def _to_optional_float(value) -> float | None:
@@ -253,12 +279,14 @@ def summarize_time_windows(records: Sequence[RequestRecord], duration_minutes: f
         label = f'{format_duration(start_offset)}-{format_duration(end_offset)}'
         windows.append(summarize_time_window(label, window_records, base_start, start_offset, end_offset))
 
-    overall = summarize_time_window('24h Overall', ordered, base_start, 0.0, target_seconds)
+    overall_label = f'Overall ({format_duration(target_seconds)})'
+    overall = summarize_time_window(overall_label, ordered, base_start, 0.0, target_seconds)
     return {
         'window_minutes': window_minutes,
         'target_duration_minutes': duration_minutes,
         'window_count': window_count,
         'base_start': base_start,
+        'overall_label': overall_label,
         'windows': [window.__dict__ for window in windows],
         'overall': overall.__dict__,
     }
@@ -281,12 +309,64 @@ def format_duration(seconds: float) -> str:
     return f'{hours}h{minutes:02d}m{secs:02d}s'
 
 
+def compute_fluctuation_percent(values: Sequence[float]) -> float:
+    valid = [v for v in values if v is not None and not math.isnan(v)]
+    if len(valid) < 2:
+        return math.nan
+    min_val = min(valid)
+    if min_val == 0:
+        return math.nan
+    return (max(valid) - min_val) / min_val * 100.0
+
+
+def _fluctuation_cells(time_analysis: dict, metric: str) -> List[str]:
+    windows = time_analysis['windows']
+    if metric == 'success_rate':
+        values = [w['success_rate_percent'] for w in windows]
+        f = compute_fluctuation_percent(values)
+        return [format_float(f, digits=2, percent=True)] * 2
+    if metric == 'request_count':
+        values = [w['total_requests'] for w in windows]
+        f = compute_fluctuation_percent(values)
+        return [format_float(f, digits=2, percent=True)] * 2
+    avg_key = f'avg_{metric}'
+    p99_key = f'p99_{metric}'
+    avg_values = [w[avg_key] for w in windows]
+    p99_values = [w[p99_key] for w in windows]
+    return [
+        format_float(compute_fluctuation_percent(avg_values), digits=2, percent=True),
+        format_float(compute_fluctuation_percent(p99_values), digits=2, percent=True),
+    ]
+
+
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> List[str]:
     return [
         '| ' + ' | '.join(headers) + ' |',
         '| ' + ' | '.join(':---' for _ in headers) + ' |',
         *('| ' + ' | '.join(row) + ' |' for row in rows),
     ]
+
+
+def text_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> List[str]:
+    all_rows = [list(headers), *[list(row) for row in rows]]
+    widths = [
+        max(len(str(row[index])) for row in all_rows)
+        for index in range(len(headers))
+    ]
+
+    def format_row(row: Sequence[str]) -> str:
+        return '  '.join(str(value).ljust(widths[index]) for index, value in enumerate(row))
+
+    separator = '  '.join('-' * width for width in widths)
+    return [
+        format_row(headers),
+        separator,
+        *(format_row(row) for row in rows),
+    ]
+
+
+def compact_metric_cell(avg_value: float, p99_value: float, digits: int = 4) -> str:
+    return f'{format_float(avg_value, digits=digits)}/{format_float(p99_value, digits=digits)}'
 
 
 def format_metric_cell(avg_value: float, p99_value: float, digits: int = 4, suffix: str = '') -> str:
@@ -296,7 +376,9 @@ def format_metric_cell(avg_value: float, p99_value: float, digits: int = 4, suff
 def window_table_headers(time_analysis: dict) -> List[str]:
     headers = ['指标']
     headers.extend(window['label'] for window in time_analysis['windows'])
-    headers.append('24h Overall')
+    headers.append(time_analysis.get('overall_label', 'Overall'))
+    headers.append('Avg波动')
+    headers.append('P99波动')
     return headers
 
 
@@ -308,18 +390,50 @@ def window_metric_rows(time_analysis: dict) -> List[List[str]]:
         [
             'TTFT(s)',
             *(format_metric_cell(item['avg_ttft_seconds'], item['p99_ttft_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'ttft_seconds'),
         ],
         [
             'TPOT(s)',
             *(format_metric_cell(item['avg_tpot_seconds'], item['p99_tpot_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'tpot_seconds'),
         ],
         [
             'TPS(tok/s)',
             *(format_metric_cell(item['avg_tps'], item['p99_tps']) for item in series),
+            *_fluctuation_cells(time_analysis, 'tps'),
         ],
         [
             'E2E(s)',
             *(format_metric_cell(item['avg_e2e_seconds'], item['p99_e2e_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'e2e_seconds'),
+        ],
+    ]
+
+
+def compact_window_metric_rows(time_analysis: dict) -> List[List[str]]:
+    windows = list(time_analysis['windows'])
+    overall = time_analysis['overall']
+    series = windows + [overall]
+    return [
+        [
+            'TTFT(s)',
+            *(compact_metric_cell(item['avg_ttft_seconds'], item['p99_ttft_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'ttft_seconds'),
+        ],
+        [
+            'TPOT(s)',
+            *(compact_metric_cell(item['avg_tpot_seconds'], item['p99_tpot_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'tpot_seconds'),
+        ],
+        [
+            'TPS(tok/s)',
+            *(compact_metric_cell(item['avg_tps'], item['p99_tps']) for item in series),
+            *_fluctuation_cells(time_analysis, 'tps'),
+        ],
+        [
+            'E2E(s)',
+            *(compact_metric_cell(item['avg_e2e_seconds'], item['p99_e2e_seconds']) for item in series),
+            *_fluctuation_cells(time_analysis, 'e2e_seconds'),
         ],
     ]
 
@@ -330,6 +444,7 @@ def success_rate_row(time_analysis: dict) -> List[List[str]]:
         [
             '请求成功率',
             *(format_float(item['success_rate_percent'], digits=2, percent=True) for item in series),
+            *_fluctuation_cells(time_analysis, 'success_rate'),
         ]
     ]
 
@@ -340,19 +455,24 @@ def request_count_row(time_analysis: dict) -> List[List[str]]:
         [
             '请求数',
             *(f'{item["success_requests"]}/{item["total_requests"]}' for item in series),
+            *_fluctuation_cells(time_analysis, 'request_count'),
         ]
     ]
 
 
 def print_analysis_tables(time_analysis: dict) -> None:
     headers = window_table_headers(time_analysis)
-    rows = window_metric_rows(time_analysis)
+    rows = compact_window_metric_rows(time_analysis)
     success_rows = success_rate_row(time_analysis)
-    print('\nMixed stability window metrics:', flush=True)
-    for line in markdown_table(headers, rows):
+    count_rows = request_count_row(time_analysis)
+    print('\nMixed stability window metrics (avg/p99):', flush=True)
+    for line in text_table(headers, rows):
         print(line, flush=True)
     print('\nMixed stability success rate:', flush=True)
-    for line in markdown_table(headers, success_rows):
+    for line in text_table(headers, success_rows):
+        print(line, flush=True)
+    print('\nMixed stability request counts (success/total):', flush=True)
+    for line in text_table(headers, count_rows):
         print(line, flush=True)
 
 
@@ -424,6 +544,7 @@ def build_evalscope_lane_args(args: argparse.Namespace, lane: str, run_dir: Path
 
     lane_args.parallel = _first_scalar(lane_args.parallel)
     lane_args.number = _first_scalar(lane_args.number)
+    lane_args.rate = args.vl_rate if lane == 'vl' else args.text_rate
     return lane_args
 
 
@@ -507,7 +628,7 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     requests = build_request_pool(lane_args, api_plugin)
     print(
         f'[{lane}] continuous run: parallel={lane_args.parallel}, sample_pool={len(requests)}, '
-        f'target={format_duration(target_seconds)}, output={run_dir}',
+        f'rate={lane_args.rate}, target={format_duration(target_seconds)}, output={run_dir}',
         flush=True,
     )
 
@@ -515,47 +636,48 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     done_event = asyncio.Event()
     writer_task = asyncio.create_task(write_continuous_lane_results(queue, done_event, lane_args, api_plugin))
 
-    async def post_request(semaphore, client, request):
-        async with semaphore:
-            benchmark_data = await client.post(request)
-        benchmark_data.update_gpu_usage()
-        await queue.put(benchmark_data)
-
     scheduled = 0
     request_index = 0
+    schedule_lock = asyncio.Lock()
     started_at = time.time()
-    semaphore = asyncio.Semaphore(lane_args.parallel)
-    in_flight: set[asyncio.Task] = set()
-    max_in_flight = max(1, lane_args.parallel * lane_args.in_flight_task_multiplier)
+    deadline = started_at + target_seconds
+    next_request_time = started_at
+
+    async def worker(worker_index: int, client):
+        nonlocal scheduled, request_index, next_request_time
+        while time.time() < deadline:
+            async with schedule_lock:
+                if time.time() >= deadline:
+                    break
+                if lane_args.rate != -1:
+                    wait_seconds = max(0.0, next_request_time - time.time())
+                    if wait_seconds > 0:
+                        await asyncio.sleep(wait_seconds)
+                    if time.time() >= deadline:
+                        break
+                    next_request_time = time.time() + random.expovariate(lane_args.rate)
+                request = requests[request_index % len(requests)]
+                request_index += 1
+                scheduled += 1
+            benchmark_data = await client.post(request)
+            benchmark_data.update_gpu_usage()
+            await queue.put(benchmark_data)
 
     client = AioHttpClient(lane_args, api_plugin)
     async with client:
-        while time.time() - started_at < target_seconds:
-            if len(in_flight) >= max_in_flight:
-                done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-                in_flight = pending
-                for task in done:
-                    exc = task.exception()
-                    if exc:
-                        raise exc
+        worker_tasks = [
+            asyncio.create_task(worker(index, client))
+            for index in range(lane_args.parallel)
+        ]
+        results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+        failures = [result for result in results if isinstance(result, Exception)]
+        if failures:
+            raise RuntimeError(f'{lane} request worker failures: {failures[:3]}')
 
-            request = requests[request_index % len(requests)]
-            request_index += 1
-            scheduled += 1
-            in_flight.add(asyncio.create_task(post_request(semaphore, client, request)))
-
-            if lane_args.rate != -1:
-                import numpy as np
-                interval = np.random.exponential(1.0 / lane_args.rate)
-                await asyncio.sleep(interval)
-
-        print(f'[{lane}] duration reached; stop scheduling new requests, waiting for {len(in_flight)} in-flight tasks', flush=True)
-
-        if in_flight:
-            results = await asyncio.gather(*in_flight, return_exceptions=True)
-            failures = [result for result in results if isinstance(result, Exception)]
-            if failures:
-                raise RuntimeError(f'{lane} in-flight request failures: {failures[:3]}')
+        print(
+            f'[{lane}] duration reached; stop scheduling new requests, waited for active workers={lane_args.parallel}',
+            flush=True,
+        )
 
     await queue.join()
     done_event.set()
@@ -564,6 +686,104 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     records = load_requests_from_db(db_path)
     print(f'[{lane}] scheduled={scheduled}, recorded={len(records)}, db={db_path}', flush=True)
     return ContinuousLaneResult(run_dir=run_dir, db_path=db_path, records=records)
+
+
+def split_warmup_requests(total_requests: int) -> Tuple[int, int]:
+    if total_requests <= 0:
+        return 0, 0
+    vl_requests = max(1, total_requests // 4) if total_requests > 1 else 0
+    text_requests = total_requests - vl_requests
+    return vl_requests, text_requests
+
+
+async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path, request_count: int) -> WarmupLaneResult:
+    ensure_evalscope_on_path()
+    from evalscope.perf.http_client import AioHttpClient, test_connection
+    from evalscope.perf.plugin import ApiRegistry
+    from evalscope.perf.utils.benchmark_util import Metrics
+
+    if request_count <= 0:
+        return WarmupLaneResult(lane=lane, total_requests=0, success_requests=0, failed_requests=0, duration_seconds=0.0)
+
+    run_dir = output_root / 'warmup' / lane
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lane_args = build_evalscope_lane_args(args, lane, run_dir)
+    lane_args.number = max(int(request_count), 1)
+    lane_args.parallel = min(int(lane_args.parallel), int(request_count))
+    api_plugin = ApiRegistry.get_class(lane_args.api)(lane_args)
+
+    if not Metrics.is_embedding_or_rerank(lane_args.api) and not lane_args.no_test_connection:
+        ok = await test_connection(lane_args, api_plugin)
+        if not ok:
+            raise TimeoutError(f'{lane} warmup connection test failed')
+
+    requests = build_request_pool(lane_args, api_plugin)
+    semaphore = asyncio.Semaphore(lane_args.parallel)
+
+    async def post_request(client, request):
+        async with semaphore:
+            benchmark_data = await client.post(request)
+        return benchmark_data
+
+    started_at = time.time()
+    client = AioHttpClient(lane_args, api_plugin)
+    async with client:
+        tasks = [
+            asyncio.create_task(post_request(client, requests[index % len(requests)]))
+            for index in range(request_count)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    success = 0
+    failed = 0
+    for result in results:
+        if isinstance(result, Exception):
+            failed += 1
+        elif getattr(result, 'success', False):
+            success += 1
+        else:
+            failed += 1
+    duration = time.time() - started_at
+    print(
+        f'[warmup:{lane}] requests={request_count}, success={success}, failed={failed}, '
+        f'duration={format_duration(duration)}',
+        flush=True,
+    )
+    return WarmupLaneResult(
+        lane=lane,
+        total_requests=request_count,
+        success_requests=success,
+        failed_requests=failed,
+        duration_seconds=duration,
+    )
+
+
+async def run_warmup(args: argparse.Namespace, output_root: Path) -> None:
+    warmup_requests = args.warmup_requests
+    if warmup_requests <= 0:
+        print('[warmup] skipped because --warmup-requests <= 0', flush=True)
+        return
+
+    vl_requests, text_requests = split_warmup_requests(warmup_requests)
+    print(
+        f'[warmup] start: total={warmup_requests}, VL={vl_requests}, TEXT={text_requests}; '
+        'warmup only prints logs and does not generate reports',
+        flush=True,
+    )
+    started_at = time.time()
+    vl_task = asyncio.create_task(run_warmup_lane('vl', args, output_root, vl_requests))
+    text_task = asyncio.create_task(run_warmup_lane('text', args, output_root, text_requests))
+    results = await asyncio.gather(vl_task, text_task)
+    total = sum(result.total_requests for result in results)
+    success = sum(result.success_requests for result in results)
+    failed = sum(result.failed_requests for result in results)
+    print(
+        f'[warmup] done: requests={total}, success={success}, failed={failed}, '
+        f'duration={format_duration(time.time() - started_at)}',
+        flush=True,
+    )
+    if failed:
+        raise RuntimeError(f'Warmup failed: {failed}/{total} requests failed')
 
 
 async def run_continuous_mixed(args: argparse.Namespace, output_root: Path) -> Tuple[ContinuousLaneResult, ContinuousLaneResult]:
@@ -614,6 +834,7 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         '- TTFT、TPOT、E2E 统计成功请求的 avg 和 p99。',
         '- TPS avg = 时间段内成功请求 completion_tokens 总数 / 时间窗口时长。',
         '- TPS p99 = 时间段内按 1 分钟 bucket 计算 token/s 后取 p99。',
+        '- Avg波动 / P99波动 = 对应指标在所有时间窗口中的 (max - min) / min × 100%，值越小表示性能越稳定。',
         '- 到达目标时长后停止调度新请求，并等待已发出的 in-flight 请求完成。',
         f'- VL DB: {meta["vl_db_paths"][0]}',
         f'- Text DB: {meta["text_db_paths"][0]}',
@@ -657,6 +878,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--total-timeout', type=int, default=6 * 60 * 60)
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
+    parser.add_argument(
+        '--rate',
+        type=float,
+        default=1.0,
+        help='Total mixed request start rate in req/s. Default 1.0. Use -1 for closed-loop max throughput.',
+    )
+    parser.add_argument(
+        '--warmup-requests',
+        type=int,
+        default=30,
+        help='Total warmup requests before the stability run. Set 0 to skip. Default 30.',
+    )
 
     parser.add_argument(
         '--parallel',
@@ -690,6 +923,12 @@ def parse_args() -> argparse.Namespace:
         parser.error('--duration-minutes must be > 0')
     if args.window_minutes <= 0:
         parser.error('--window-minutes must be > 0')
+    if args.warmup_requests < 0:
+        parser.error('--warmup-requests must be >= 0')
+    if args.rate != -1 and args.rate <= 0:
+        parser.error('--rate must be > 0, or -1 for closed-loop max throughput')
+    args.vl_rate = -1 if args.rate == -1 else args.rate / 4.0
+    args.text_rate = -1 if args.rate == -1 else args.rate * 3.0 / 4.0
     if args.parallel is not None:
         if args.parallel <= 0:
             parser.error('--parallel must be a positive integer')
@@ -714,6 +953,7 @@ def main() -> int:
     args = parse_args()
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
+    ensure_process_tmpdir(output_root)
 
     target_seconds = args.duration_minutes * 60.0
     if args.parallel is not None:
@@ -721,6 +961,8 @@ def main() -> int:
             f'Total concurrency {args.parallel}: VL={args.vl_parallel}, TEXT={args.text_parallel}',
             flush=True,
         )
+    print(f'Total request rate {args.rate}: VL={args.vl_rate}, TEXT={args.text_rate}', flush=True)
+    asyncio.run(run_warmup(args, output_root))
     print(f'Continuous mixed stability target: {format_duration(target_seconds)}', flush=True)
 
     vl_result, text_result = asyncio.run(run_continuous_mixed(args, output_root))
