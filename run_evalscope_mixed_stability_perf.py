@@ -691,7 +691,7 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
 def split_warmup_requests(total_requests: int) -> Tuple[int, int]:
     if total_requests <= 0:
         return 0, 0
-    vl_requests = max(1, total_requests // 4) if total_requests > 1 else 0
+    vl_requests = max(1, total_requests * 3 // 8) if total_requests > 1 else 0
     text_requests = total_requests - vl_requests
     return vl_requests, text_requests
 
@@ -895,7 +895,7 @@ def parse_args() -> argparse.Namespace:
         '--parallel',
         type=int,
         default=None,
-        help='Total mixed concurrency. Must be a positive multiple of 4; split as 1/4 multimodal and 3/4 text-only.',
+        help='Total mixed concurrency. Must be a positive multiple of 8; split as 3/8 multimodal and 5/8 text-only.',
     )
     parser.add_argument('--vl-parallel', type=int, default=2)
     parser.add_argument('--vl-number', type=int, default=100)
@@ -927,15 +927,15 @@ def parse_args() -> argparse.Namespace:
         parser.error('--warmup-requests must be >= 0')
     if args.rate != -1 and args.rate <= 0:
         parser.error('--rate must be > 0, or -1 for closed-loop max throughput')
-    args.vl_rate = -1 if args.rate == -1 else args.rate / 4.0
-    args.text_rate = -1 if args.rate == -1 else args.rate * 3.0 / 4.0
+    args.vl_rate = -1 if args.rate == -1 else args.rate * 3.0 / 8.0
+    args.text_rate = -1 if args.rate == -1 else args.rate * 5.0 / 8.0
     if args.parallel is not None:
         if args.parallel <= 0:
             parser.error('--parallel must be a positive integer')
-        if args.parallel % 4 != 0:
-            parser.error('--parallel must be a multiple of 4 so multimodal:text-only concurrency can be split 1:3')
-        args.vl_parallel = args.parallel // 4
-        args.text_parallel = args.parallel * 3 // 4
+        if args.parallel % 8 != 0:
+            parser.error('--parallel must be a multiple of 8 so multimodal:text-only concurrency can be split 3:5')
+        args.vl_parallel = args.parallel * 3 // 8
+        args.text_parallel = args.parallel * 5 // 8
     if args.vl_number <= 0:
         parser.error('--vl-number must be > 0')
     if args.text_number <= 0:

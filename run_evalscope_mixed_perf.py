@@ -7,9 +7,9 @@ Workload default:
 - 600 text-only requests, concurrency 6, input length sampled uniformly from
   2000 to 10000 tokens, output 50 tokens.
 
-Pass --parallel to set total mixed concurrency. The script splits it 1:3
+Pass --parallel to set total mixed concurrency. The script splits it 3:5
 between multimodal and text-only workloads, so the value must be a multiple
-of 4.
+of 8.
 
 The script launches two independent `evalscope perf` subprocesses so each load
 profile still uses EvalScope's native perf implementation.
@@ -524,7 +524,7 @@ def parse_args() -> argparse.Namespace:
         '--parallel',
         type=int,
         default=None,
-        help='Total mixed concurrency. Must be a positive multiple of 4; split as 1/4 multimodal and 3/4 text-only.',
+        help='Total mixed concurrency. Must be a positive multiple of 8; split as 3/8 multimodal and 5/8 text-only.',
     )
 
     parser.add_argument('--vl-name', default=None)
@@ -563,10 +563,10 @@ def parse_args() -> argparse.Namespace:
     if args.parallel is not None:
         if args.parallel <= 0:
             parser.error('--parallel must be a positive integer')
-        if args.parallel % 4 != 0:
-            parser.error('--parallel must be a multiple of 4 so multimodal:text-only concurrency can be split 1:3')
-        args.vl_parallel = args.parallel // 4
-        args.text_parallel = args.parallel * 3 // 4
+        if args.parallel % 8 != 0:
+            parser.error('--parallel must be a multiple of 8 so multimodal:text-only concurrency can be split 3:5')
+        args.vl_parallel = args.parallel * 3 // 8
+        args.text_parallel = args.parallel * 5 // 8
 
     if args.vl_name is None:
         args.vl_name = f'mixed_vl_{args.vl_parallel}c_{args.vl_number}n'
