@@ -2,3 +2,4 @@ output/
 outputs/
 *_output/
 *_outputs/
+__pycache__/
