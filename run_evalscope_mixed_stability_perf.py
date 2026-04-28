@@ -22,7 +22,6 @@ import os
 import random
 import sqlite3
 import statistics
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,35 +80,21 @@ class WarmupLaneResult:
     duration_seconds: float
 
 
-def find_evalscope_repo_root() -> Path | None:
-    candidates = [
-        SCRIPT_DIR,
-        SCRIPT_DIR / 'evalscope',
-        SCRIPT_DIR.parent / 'evalscope',
-    ]
-    for candidate in candidates:
-        if (candidate / 'pyproject.toml').exists() and (candidate / 'evalscope' / 'cli' / 'cli.py').exists():
-            return candidate
-    return None
+def ensure_evalscope_importable() -> None:
+    """Require EvalScope from the active Python environment.
 
-
-def ensure_evalscope_on_path() -> Path:
-    repo_root = find_evalscope_repo_root()
-    if repo_root is None:
-        raise FileNotFoundError(
-            'Cannot find EvalScope repo. Run from a workspace that contains the evalscope repo.'
-        )
-    venv_site_packages = (
-        repo_root / '.venv' / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
-    )
-    if venv_site_packages.exists():
-        venv_site_packages_str = str(venv_site_packages)
-        if venv_site_packages_str not in sys.path:
-            sys.path.insert(0, venv_site_packages_str)
-    repo_root_str = str(repo_root)
-    if repo_root_str not in sys.path:
-        sys.path.insert(0, repo_root_str)
-    return repo_root
+    Do not add sibling source trees or local virtualenvs to sys.path here. The
+    runner must use the package selected by the invoking interpreter, e.g.
+    `conda run -n evalscope python ...`.
+    """
+    try:
+        import evalscope  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            'Cannot import EvalScope from the active Python environment. '
+            'Install evalscope into this environment or run with the intended '
+            'environment Python, for example: conda run -n evalscope python ...'
+        ) from exc
 
 
 def sanitize_name(value: str) -> str:
@@ -496,7 +481,7 @@ def _first_scalar(value):
 
 
 def build_evalscope_lane_args(args: argparse.Namespace, lane: str, run_dir: Path):
-    ensure_evalscope_on_path()
+    ensure_evalscope_importable()
     from evalscope.perf.arguments import Arguments
 
     if lane == 'vl':
@@ -630,7 +615,7 @@ async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asynci
 
 
 async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: Path, target_seconds: float) -> ContinuousLaneResult:
-    ensure_evalscope_on_path()
+    ensure_evalscope_importable()
     from evalscope.perf.http_client import AioHttpClient, test_connection
     from evalscope.perf.plugin import ApiRegistry
     from evalscope.perf.utils.db_util import summary_result
@@ -739,7 +724,7 @@ def split_warmup_requests(total_requests: int) -> Tuple[int, int]:
 
 
 async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path, request_count: int) -> WarmupLaneResult:
-    ensure_evalscope_on_path()
+    ensure_evalscope_importable()
     from evalscope.perf.http_client import AioHttpClient, test_connection
     from evalscope.perf.plugin import ApiRegistry
 
