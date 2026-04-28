@@ -484,7 +484,7 @@ def print_analysis_tables(time_analysis: dict) -> None:
     print('\nMixed stability request counts (success/total):', flush=True)
     for line in text_table(headers, count_rows):
         print(line, flush=True)
-    print('\nCalculation method:', flush=True)
+    print('\n计算方法:', flush=True)
     for line in CALCULATION_METHOD_LINES:
         print(f'- {line}', flush=True)
 
