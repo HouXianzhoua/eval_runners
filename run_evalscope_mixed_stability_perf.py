@@ -573,10 +573,10 @@ def build_request_pool(lane_args, api_plugin) -> List[dict]:
 
 
 async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asyncio.Event, lane_args, api_plugin) -> Tuple[object, Path]:
-    from evalscope.perf.utils.benchmark_util import BenchmarkMetrics
+    from evalscope.perf.utils.benchmark_util import MetricsAccumulator
     from evalscope.perf.utils.db_util import create_result_table, get_result_db_path, insert_benchmark_data
 
-    accumulator = BenchmarkMetrics(concurrency=lane_args.parallel, rate=lane_args.rate)
+    accumulator = MetricsAccumulator(concurrency=lane_args.parallel, rate=lane_args.rate)
     db_path = Path(get_result_db_path(lane_args))
     commit_every = lane_args.db_commit_interval
     processed_since_commit = 0
@@ -593,7 +593,7 @@ async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asynci
                 continue
 
             try:
-                accumulator.update_metrics(benchmark_data, api_plugin)
+                accumulator.update(benchmark_data, api_plugin)
                 insert_benchmark_data(cursor, benchmark_data)
             except Exception as exc:
                 print(f'[{lane_args.name}] writer process error: {exc}', file=sys.stderr, flush=True)
@@ -605,15 +605,15 @@ async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asynci
                 await asyncio.to_thread(con.commit)
                 processed_since_commit = 0
 
-            if int(accumulator.n_total_queries) % lane_args.log_every_n_query == 0:
-                message = accumulator.create_message(api_type=lane_args.api)
+            if int(accumulator.n_total) % lane_args.log_every_n_query == 0:
+                message = accumulator.to_result().create_message(api_type=lane_args.api)
                 print(f'[{lane_args.name}] {json.dumps(message, ensure_ascii=False)}', flush=True)
 
             queue.task_done()
 
         await asyncio.to_thread(con.commit)
 
-    return accumulator, db_path
+    return accumulator.to_result(), db_path
 
 
 async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: Path, target_seconds: float) -> ContinuousLaneResult:
@@ -666,24 +666,30 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
                 request = requests[request_index % len(requests)]
                 request_index += 1
                 scheduled += 1
-            remaining = (deadline + 300) - time.time()
+            remaining = (deadline + args.request_timeout) - time.time()
             if remaining <= 0:
                 break
+            request_timeout = min(remaining, args.request_timeout)
             try:
-                benchmark_data = await asyncio.wait_for(
-                    client.post(request), timeout=min(remaining, 300)
-                )
+                benchmark_data = await asyncio.wait_for(client.post(request), timeout=request_timeout)
             except asyncio.TimeoutError:
-                print(f'[{lane}] worker-{worker_index} request timed out after {min(remaining, 300):.0f}s, skipping', flush=True)
+                print(
+                    f'[{lane}] worker-{worker_index} request timed out after {request_timeout:.0f}s, skipping',
+                    flush=True,
+                )
                 continue
             except Exception as exc:
                 print(f'[{lane}] worker-{worker_index} request error: {exc}', flush=True)
                 continue
             benchmark_data.update_gpu_usage()
             try:
-                await asyncio.wait_for(queue.put(benchmark_data), timeout=30)
+                await asyncio.wait_for(queue.put(benchmark_data), timeout=args.queue_put_timeout)
             except asyncio.TimeoutError:
-                print(f'[{lane}] worker-{worker_index} queue.put timed out (writer may have crashed), stopping', flush=True)
+                print(
+                    f'[{lane}] worker-{worker_index} queue.put timed out after '
+                    f'{args.queue_put_timeout:.0f}s (writer may have crashed), stopping',
+                    flush=True,
+                )
                 break
 
     client = AioHttpClient(lane_args, api_plugin)
@@ -898,6 +904,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--connect-timeout', type=int, default=None)
     parser.add_argument('--read-timeout', type=int, default=None)
     parser.add_argument('--total-timeout', type=int, default=6 * 60 * 60)
+    parser.add_argument(
+        '--request-timeout',
+        type=float,
+        default=300.0,
+        help='Per request wall-clock timeout in seconds during continuous runs. Default 300.',
+    )
+    parser.add_argument(
+        '--queue-put-timeout',
+        type=float,
+        default=30.0,
+        help='Timeout in seconds when enqueueing completed request data for the result writer. Default 30.',
+    )
     parser.add_argument('--log-every-n-query', type=int, default=20)
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument(
@@ -947,6 +965,10 @@ def parse_args() -> argparse.Namespace:
         parser.error('--window-minutes must be > 0')
     if args.warmup_requests < 0:
         parser.error('--warmup-requests must be >= 0')
+    if args.request_timeout <= 0:
+        parser.error('--request-timeout must be > 0')
+    if args.queue_put_timeout <= 0:
+        parser.error('--queue-put-timeout must be > 0')
     if args.rate != -1 and args.rate <= 0:
         parser.error('--rate must be > 0, or -1 for closed-loop max throughput')
     args.vl_rate = -1 if args.rate == -1 else args.rate * 3.0 / 8.0
