@@ -339,6 +339,16 @@ def _fluctuation_cells(time_analysis: dict, metric: str) -> List[str]:
     ]
 
 
+CALCULATION_METHOD_LINES = [
+    'TTFT、TPOT、E2E：每个时间窗口内仅统计成功请求，单元格为 avg/p99。',
+    'TPS avg：时间窗口内成功请求 completion_tokens 总数 / 窗口时长。',
+    'TPS p99：时间窗口内按 1 分钟 bucket 计算 token/s 后取 p99。',
+    'Avg波动：该指标各时间窗口 avg 值的 (max - min) / min × 100%，不包含 Overall。',
+    'P99波动：该指标各时间窗口 p99 值的 (max - min) / min × 100%，不包含 Overall。',
+    '请求成功率和请求数只有单值序列，Avg波动和 P99波动列展示同一个波动值。',
+]
+
+
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> List[str]:
     return [
         '| ' + ' | '.join(headers) + ' |',
@@ -474,6 +484,9 @@ def print_analysis_tables(time_analysis: dict) -> None:
     print('\nMixed stability request counts (success/total):', flush=True)
     for line in text_table(headers, count_rows):
         print(line, flush=True)
+    print('\nCalculation method:', flush=True)
+    for line in CALCULATION_METHOD_LINES:
+        print(f'- {line}', flush=True)
 
 
 def _first_scalar(value):
@@ -859,10 +872,7 @@ def write_reports(output_root: Path, args: argparse.Namespace, meta: dict) -> No
         '## 说明',
         '',
         '- 表格只统计图文和纯文本合并后的整体数据，不区分请求类型。',
-        '- TTFT、TPOT、E2E 统计成功请求的 avg 和 p99。',
-        '- TPS avg = 时间段内成功请求 completion_tokens 总数 / 时间窗口时长。',
-        '- TPS p99 = 时间段内按 1 分钟 bucket 计算 token/s 后取 p99。',
-        '- Avg波动 / P99波动 = 对应指标在所有时间窗口中的 (max - min) / min × 100%，值越小表示性能越稳定。',
+        *(f'- {line}' for line in CALCULATION_METHOD_LINES),
         '- 到达目标时长后停止调度新请求，并等待已发出的 in-flight 请求完成。',
         f'- VL DB: {meta["vl_db_paths"][0]}',
         f'- Text DB: {meta["text_db_paths"][0]}',
