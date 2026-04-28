@@ -573,13 +573,15 @@ def build_request_pool(lane_args, api_plugin) -> List[dict]:
 
 
 async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asyncio.Event, lane_args, api_plugin) -> Tuple[object, Path]:
-    from evalscope.perf.utils.benchmark_util import MetricsAccumulator
+    from evalscope.perf.utils.benchmark_util import BenchmarkMetrics
     from evalscope.perf.utils.db_util import create_result_table, get_result_db_path, insert_benchmark_data
 
-    accumulator = MetricsAccumulator(concurrency=lane_args.parallel, rate=lane_args.rate)
+    accumulator = BenchmarkMetrics(concurrency=lane_args.parallel, rate=lane_args.rate)
     db_path = Path(get_result_db_path(lane_args))
     commit_every = lane_args.db_commit_interval
     processed_since_commit = 0
+
+    print(f'[{lane_args.name}] writer started, db={db_path}', flush=True)
 
     with sqlite3.connect(db_path, check_same_thread=False) as con:
         cursor = con.cursor()
@@ -590,22 +592,28 @@ async def write_continuous_lane_results(queue: asyncio.Queue, done_event: asynci
             except asyncio.TimeoutError:
                 continue
 
-            accumulator.update(benchmark_data, api_plugin)
-            insert_benchmark_data(cursor, benchmark_data)
+            try:
+                accumulator.update_metrics(benchmark_data, api_plugin)
+                insert_benchmark_data(cursor, benchmark_data)
+            except Exception as exc:
+                print(f'[{lane_args.name}] writer process error: {exc}', file=sys.stderr, flush=True)
+                queue.task_done()
+                continue
+
             processed_since_commit += 1
             if processed_since_commit >= commit_every:
                 await asyncio.to_thread(con.commit)
                 processed_since_commit = 0
 
-            if int(accumulator.n_total) % lane_args.log_every_n_query == 0:
-                message = accumulator.to_result().create_message(api_type=lane_args.api)
+            if int(accumulator.n_total_queries) % lane_args.log_every_n_query == 0:
+                message = accumulator.create_message(api_type=lane_args.api)
                 print(f'[{lane_args.name}] {json.dumps(message, ensure_ascii=False)}', flush=True)
 
             queue.task_done()
 
         await asyncio.to_thread(con.commit)
 
-    return accumulator.to_result(), db_path
+    return accumulator, db_path
 
 
 async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: Path, target_seconds: float) -> ContinuousLaneResult:
@@ -658,9 +666,25 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
                 request = requests[request_index % len(requests)]
                 request_index += 1
                 scheduled += 1
-            benchmark_data = await client.post(request)
+            remaining = (deadline + 300) - time.time()
+            if remaining <= 0:
+                break
+            try:
+                benchmark_data = await asyncio.wait_for(
+                    client.post(request), timeout=min(remaining, 300)
+                )
+            except asyncio.TimeoutError:
+                print(f'[{lane}] worker-{worker_index} request timed out after {min(remaining, 300):.0f}s, skipping', flush=True)
+                continue
+            except Exception as exc:
+                print(f'[{lane}] worker-{worker_index} request error: {exc}', flush=True)
+                continue
             benchmark_data.update_gpu_usage()
-            await queue.put(benchmark_data)
+            try:
+                await asyncio.wait_for(queue.put(benchmark_data), timeout=30)
+            except asyncio.TimeoutError:
+                print(f'[{lane}] worker-{worker_index} queue.put timed out (writer may have crashed), stopping', flush=True)
+                break
 
     client = AioHttpClient(lane_args, api_plugin)
     async with client:
