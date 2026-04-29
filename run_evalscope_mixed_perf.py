@@ -2,9 +2,9 @@
 """Run two EvalScope native perf jobs concurrently.
 
 Workload default:
-- 300 multimodal requests, concurrency 2, each request uses 1000 text tokens
+- 500 multimodal requests, concurrency 2, each request uses 1000 text tokens
   plus 2 images (720x1280), output 250 tokens.
-- 600 text-only requests, concurrency 6, input length sampled uniformly from
+- 1000 text-only requests, concurrency 6, input length sampled uniformly from
   2000 to 10000 tokens, output 50 tokens.
 
 Pass --parallel to set total mixed concurrency. The script splits it 3:5
@@ -574,7 +574,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument('--vl-name', default=None)
-    parser.add_argument('--vl-number', type=int, default=300)
+    parser.add_argument('--vl-number', type=int, default=500)
     parser.add_argument('--vl-parallel', type=int, default=2)
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-max-prompt-length', type=int, default=1000)
@@ -587,7 +587,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--image-format', default='RGB')
 
     parser.add_argument('--text-name', default=None)
-    parser.add_argument('--text-number', type=int, default=600)
+    parser.add_argument('--text-number', type=int, default=1000)
     parser.add_argument('--text-parallel', type=int, default=6)
     parser.add_argument('--text-min-prompt-length', type=int, default=2000)
     parser.add_argument('--text-max-prompt-length', type=int, default=10000)
