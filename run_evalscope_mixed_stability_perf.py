@@ -940,8 +940,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--warmup-requests',
         type=int,
-        default=30,
-        help='Total warmup requests before the stability run. Set 0 to skip. Default 30.',
+        default=100,
+        help='Total warmup requests before the stability run. Set 0 to skip. Default 100.',
     )
 
     parser.add_argument(
@@ -951,7 +951,15 @@ def parse_args() -> argparse.Namespace:
         help='Total mixed concurrency. Must be a positive multiple of 8; split as 3/8 multimodal (VL) and 5/8 text-only. Default 8.',
     )
     parser.add_argument('--vl-parallel', type=int, default=2)
-    parser.add_argument('--vl-number', type=int, default=100)
+    parser.add_argument(
+        '--vl-sample-pool-size',
+        '--vl-number',
+        dest='vl_number',
+        type=int,
+        default=1200,
+        help='Number of multimodal request samples to pre-generate and cycle through during the timed run. Default 1200. '
+        '--vl-number is kept as a backward-compatible alias.',
+    )
     parser.add_argument('--vl-min-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-max-prompt-length', type=int, default=1000)
     parser.add_argument('--vl-output-tokens', type=int, default=250)
@@ -963,7 +971,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--image-format', default='RGB')
 
     parser.add_argument('--text-parallel', type=int, default=6)
-    parser.add_argument('--text-number', type=int, default=200)
+    parser.add_argument(
+        '--text-sample-pool-size',
+        '--text-number',
+        dest='text_number',
+        type=int,
+        default=2000,
+        help='Number of text request samples to pre-generate and cycle through during the timed run. Default 2000. '
+        '--text-number is kept as a backward-compatible alias.',
+    )
     parser.add_argument('--text-min-prompt-length', type=int, default=2000)
     parser.add_argument('--text-max-prompt-length', type=int, default=10000)
     parser.add_argument('--text-output-tokens', type=int, default=50)
@@ -994,9 +1010,9 @@ def parse_args() -> argparse.Namespace:
         args.vl_parallel = args.parallel * 3 // 8
         args.text_parallel = args.parallel * 5 // 8
     if args.vl_number <= 0:
-        parser.error('--vl-number must be > 0')
+        parser.error('--vl-sample-pool-size must be > 0')
     if args.text_number <= 0:
-        parser.error('--text-number must be > 0')
+        parser.error('--text-sample-pool-size must be > 0')
     if not args.vl_tokenizer_path:
         args.vl_tokenizer_path = args.tokenizer_path
     if not args.text_tokenizer_path:
