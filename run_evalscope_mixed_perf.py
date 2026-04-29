@@ -35,23 +35,61 @@ WORKSPACE_DIR = SCRIPT_DIR if (SCRIPT_DIR / 'evalscope').exists() else SCRIPT_DI
 DEFAULT_OUTPUT_ROOT = WORKSPACE_DIR / 'mixed_perf_outputs'
 
 
-def find_evalscope_repo_root() -> Path | None:
-    candidates = [
-        SCRIPT_DIR,
-        SCRIPT_DIR / 'evalscope',
-        SCRIPT_DIR.parent / 'evalscope',
+def local_evalscope_source_roots() -> List[Path]:
+    candidates = (SCRIPT_DIR, SCRIPT_DIR / 'evalscope', SCRIPT_DIR.parent / 'evalscope')
+    return [
+        candidate.resolve()
+        for candidate in candidates
+        if (candidate / 'pyproject.toml').exists() and (candidate / 'evalscope' / 'cli' / 'cli.py').exists()
     ]
-    for candidate in candidates:
-        if (candidate / 'pyproject.toml').exists() and (candidate / 'evalscope' / 'cli' / 'cli.py').exists():
-            return candidate
-    return None
+
+
+def sanitize_pythonpath(env: Dict[str, str]) -> None:
+    existing_pythonpath = env.get('PYTHONPATH')
+    if not existing_pythonpath:
+        return
+
+    source_roots = set(local_evalscope_source_roots())
+    kept_entries = []
+    for entry in existing_pythonpath.split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = Path(entry).expanduser().resolve()
+        except OSError:
+            kept_entries.append(entry)
+            continue
+        if resolved not in source_roots:
+            kept_entries.append(entry)
+
+    if kept_entries:
+        env['PYTHONPATH'] = os.pathsep.join(kept_entries)
+    else:
+        env.pop('PYTHONPATH', None)
+
+
+def ensure_evalscope_package_importable() -> None:
+    """Require EvalScope from the active Python environment, not local source."""
+    import importlib.util
+
+    spec = importlib.util.find_spec('evalscope')
+    if spec is None or spec.origin is None:
+        raise ImportError(
+            'Cannot import EvalScope from the active Python environment. '
+            'Install evalscope or run this script after `conda activate evalscope`.'
+        )
+
+    origin = Path(spec.origin).resolve()
+    for source_root in local_evalscope_source_roots():
+        if origin == source_root / 'evalscope' / '__init__.py' or source_root in origin.parents:
+            raise ImportError(
+                f'EvalScope resolved to local source tree: {origin}. '
+                'Run this script from an environment with the evalscope package installed, '
+                'without adding the source checkout to PYTHONPATH.'
+            )
 
 
 def resolve_evalscope_cmd(evalscope_bin: str) -> List[str]:
-    repo_root = find_evalscope_repo_root()
-    repo_venv_python = repo_root / '.venv' / 'bin' / 'python' if repo_root else None
-    cli_module_cmd = [sys.executable, '-m', 'evalscope.cli.cli']
-
     if os.path.sep in evalscope_bin or evalscope_bin.startswith('.'):
         resolved = Path(evalscope_bin).expanduser()
         if not resolved.is_absolute():
@@ -60,9 +98,6 @@ def resolve_evalscope_cmd(evalscope_bin: str) -> List[str]:
             return [str(resolved), '-m', 'evalscope.cli.cli']
         return [str(resolved)]
 
-    if evalscope_bin == 'evalscope' and repo_venv_python and repo_venv_python.exists():
-        return [str(repo_venv_python), '-m', 'evalscope.cli.cli']
-
     found = shutil.which(evalscope_bin)
     if found:
         found_path = Path(found)
@@ -70,13 +105,13 @@ def resolve_evalscope_cmd(evalscope_bin: str) -> List[str]:
             return [str(found_path), '-m', 'evalscope.cli.cli']
         return [str(found_path)]
 
-    cli_entry = repo_root / 'evalscope' / 'cli' / 'cli.py' if repo_root else None
-    if cli_entry and cli_entry.exists():
-        return cli_module_cmd
+    if evalscope_bin == 'evalscope':
+        ensure_evalscope_package_importable()
+        return [sys.executable, '-m', 'evalscope.cli.cli']
 
     raise FileNotFoundError(
         f'Cannot find EvalScope executable: {evalscope_bin}. '
-        'Pass --evalscope-bin explicitly or run this script from a workspace that contains the evalscope repo.'
+        'Pass --evalscope-bin explicitly or run this script after `conda activate evalscope`.'
     )
 
 
@@ -96,10 +131,10 @@ def sanitize_name(value: str) -> str:
     return normalized or 'model'
 
 
-def build_default_output_root(model_name: str) -> Path:
+def build_default_output_root(model_name: str, total_parallel: int) -> Path:
     timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
     model_stub = sanitize_name(model_name)
-    return DEFAULT_OUTPUT_ROOT / f'{model_stub}_{timestamp}'
+    return DEFAULT_OUTPUT_ROOT / f'{model_stub}_{timestamp}_p{total_parallel}'
 
 
 def validate_tokenizer_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -221,10 +256,7 @@ def run_job(name: str, cmd: List[str], quiet: bool = False) -> int:
     if not quiet:
         print(f'[{name}] command: {shlex.join(cmd)}', flush=True)
     env = os.environ.copy()
-    repo_root = find_evalscope_repo_root()
-    existing_pythonpath = env.get('PYTHONPATH')
-    if repo_root:
-        env['PYTHONPATH'] = str(repo_root) if not existing_pythonpath else f'{repo_root}:{existing_pythonpath}'
+    sanitize_pythonpath(env)
 
     try:
         proc = subprocess.Popen(
@@ -234,7 +266,7 @@ def run_job(name: str, cmd: List[str], quiet: bool = False) -> int:
             text=True,
             bufsize=1,
             env=env,
-            cwd=str(repo_root if repo_root else SCRIPT_DIR),
+            cwd=str(SCRIPT_DIR),
         )
     except Exception as exc:
         print(f'[{name}] failed to start subprocess: {exc}', file=sys.stderr, flush=True)
@@ -345,8 +377,20 @@ def read_summary_sections(summary_path: Path) -> Dict[str, List[str]]:
     return sections
 
 
+def _is_numeric_metric_cell(value: str) -> bool:
+    normalized = value.strip().replace(',', '').rstrip('%')
+    if normalized.upper() == 'INF':
+        return True
+    try:
+        float(normalized)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_box_table_data_row(section: List[str]) -> List[str]:
-    """Extract the first data row from EvalScope's rich box table output."""
+    """Extract the most likely data row from EvalScope's rich box table output."""
+    candidate_rows: List[List[str]] = []
     for line in section:
         stripped = line.strip()
         if not stripped.startswith('│'):
@@ -354,10 +398,12 @@ def parse_box_table_data_row(section: List[str]) -> List[str]:
         cells = [cell.strip() for cell in stripped.strip('│').split('│')]
         if not cells:
             continue
-        first = cells[0].replace(',', '')
-        if first.isdigit():
-            return cells
-    return []
+        numeric_cells = sum(1 for cell in cells if _is_numeric_metric_cell(cell))
+        if numeric_cells >= max(1, len(cells) // 2):
+            candidate_rows.append(cells)
+    if not candidate_rows:
+        return []
+    return max(candidate_rows, key=lambda row: sum(1 for cell in row if _is_numeric_metric_cell(cell)))
 
 
 def parse_metric_rows(summary_path: Path) -> Dict[str, str]:
@@ -508,7 +554,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--output-root',
         default=None,
-        help='Root directory used to store the two perf outputs. Default: /home/houxianzhou/vlm_eval_workspace/mixed_perf_outputs/<model>_<timestamp>',
+        help='Root directory used to store the two perf outputs. Default: mixed_perf_outputs/<model>_<timestamp>_p<total_parallel>',
     )
     parser.add_argument('--stream', action=argparse.BooleanOptionalAction, default=True, help='Use streaming mode.')
     parser.add_argument('--no-test-connection', action='store_true', default=False)
@@ -589,7 +635,7 @@ def parse_args() -> argparse.Namespace:
     validate_tokenizer_args(parser, args)
     args.evalscope_cmd = resolve_evalscope_cmd(args.evalscope_bin)
     if not args.output_root:
-        args.output_root = str(build_default_output_root(args.model))
+        args.output_root = str(build_default_output_root(args.model, args.vl_parallel + args.text_parallel))
     return args
 
 

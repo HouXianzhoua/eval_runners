@@ -3,3 +3,9 @@ outputs/
 *_output/
 *_outputs/
 __pycache__/
+.conda-cache/
+.conda-pkgs/
+.evalscope-venv/
+.mamba-cache/
+.miniforge3/
+.miniforge3.*_partial_*/

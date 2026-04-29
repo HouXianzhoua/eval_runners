@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import importlib.util
 import json
 import math
 import os
@@ -31,6 +32,15 @@ from typing import Iterable, List, Sequence, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = SCRIPT_DIR if (SCRIPT_DIR / 'evalscope').exists() else SCRIPT_DIR.parent
 DEFAULT_OUTPUT_ROOT = WORKSPACE_DIR / 'mixed_stability_outputs'
+
+
+def local_evalscope_source_roots() -> List[Path]:
+    candidates = (SCRIPT_DIR, SCRIPT_DIR / 'evalscope', SCRIPT_DIR.parent / 'evalscope')
+    return [
+        candidate.resolve()
+        for candidate in candidates
+        if (candidate / 'pyproject.toml').exists() and (candidate / 'evalscope' / 'cli' / 'cli.py').exists()
+    ]
 
 
 @dataclass
@@ -87,14 +97,22 @@ def ensure_evalscope_importable() -> None:
     runner must use the package selected by the invoking interpreter, e.g.
     `conda run -n evalscope python ...`.
     """
-    try:
-        import evalscope  # noqa: F401
-    except ImportError as exc:
+    spec = importlib.util.find_spec('evalscope')
+    if spec is None or spec.origin is None:
         raise ImportError(
             'Cannot import EvalScope from the active Python environment. '
             'Install evalscope into this environment or run with the intended '
             'environment Python, for example: conda run -n evalscope python ...'
-        ) from exc
+        )
+
+    origin = Path(spec.origin).resolve()
+    for source_root in local_evalscope_source_roots():
+        if origin == source_root / 'evalscope' / '__init__.py' or source_root in origin.parents:
+            raise ImportError(
+                f'EvalScope resolved to local source tree: {origin}. '
+                'Run with an environment that has the evalscope package installed, '
+                'without adding the source checkout to PYTHONPATH.'
+            )
 
 
 def sanitize_name(value: str) -> str:
@@ -108,9 +126,9 @@ def sanitize_name(value: str) -> str:
     return normalized or 'model'
 
 
-def build_default_output_root(model_name: str) -> Path:
+def build_default_output_root(model_name: str, total_parallel: int) -> Path:
     timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-    return DEFAULT_OUTPUT_ROOT / f'{sanitize_name(model_name)}_{timestamp}'
+    return DEFAULT_OUTPUT_ROOT / f'{sanitize_name(model_name)}_{timestamp}_p{total_parallel}'
 
 
 def ensure_process_tmpdir(output_root: Path) -> None:
@@ -979,12 +997,12 @@ def parse_args() -> argparse.Namespace:
         parser.error('--vl-number must be > 0')
     if args.text_number <= 0:
         parser.error('--text-number must be > 0')
-    if not args.output_root:
-        args.output_root = str(build_default_output_root(args.model))
     if not args.vl_tokenizer_path:
         args.vl_tokenizer_path = args.tokenizer_path
     if not args.text_tokenizer_path:
         args.text_tokenizer_path = args.tokenizer_path
+    if not args.output_root:
+        args.output_root = str(build_default_output_root(args.model, args.vl_parallel + args.text_parallel))
     return args
 
 
