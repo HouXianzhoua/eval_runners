@@ -388,33 +388,53 @@ def _is_numeric_metric_cell(value: str) -> bool:
         return False
 
 
-def parse_box_table_data_row(section: List[str]) -> List[str]:
-    """Extract the most likely data row from EvalScope's rich box table output."""
-    candidate_rows: List[List[str]] = []
+def parse_box_table_metrics(section: List[str]) -> Dict[str, str]:
+    """Extract metrics from an EvalScope rich table by reconstructing multi-line headers."""
+    header_rows: List[List[str]] = []
+    data_rows: List[List[str]] = []
+    seen_header_separator = False
+
     for line in section:
         stripped = line.strip()
-        if not stripped.startswith('│'):
+        if stripped.startswith('┡'):
+            seen_header_separator = True
             continue
-        cells = [cell.strip() for cell in stripped.strip('│').split('│')]
-        if not cells:
+        if not stripped.startswith(('┃', '│')):
             continue
-        numeric_cells = sum(1 for cell in cells if _is_numeric_metric_cell(cell))
-        if numeric_cells >= max(1, len(cells) // 2):
-            candidate_rows.append(cells)
-    if not candidate_rows:
-        return []
-    return max(candidate_rows, key=lambda row: sum(1 for cell in row if _is_numeric_metric_cell(cell)))
+
+        cells = [cell.strip() for cell in stripped.strip('┃│').split('┃' if stripped.startswith('┃') else '│')]
+        if stripped.startswith('┃') and not seen_header_separator:
+            header_rows.append(cells)
+        elif stripped.startswith('│') and seen_header_separator:
+            data_rows.append(cells)
+
+    if not header_rows or not data_rows:
+        return {}
+
+    column_count = max(len(row) for row in header_rows)
+    headers: List[str] = []
+    for index in range(column_count):
+        parts = [row[index] for row in header_rows if index < len(row) and row[index]]
+        headers.append(' '.join(parts))
+
+    data = max(data_rows, key=lambda row: sum(1 for cell in row if _is_numeric_metric_cell(cell)))
+    return {header: value for header, value in zip(headers, data) if header}
 
 
 def parse_metric_rows(summary_path: Path) -> Dict[str, str]:
     sections = read_summary_sections(summary_path)
-    detailed = parse_box_table_data_row(sections.get('Detailed Performance Metrics', []))
-    request = parse_box_table_data_row(sections.get('Request Metrics', []))
+    detailed_metrics = parse_box_table_metrics(sections.get('Detailed Performance Metrics', []))
+    request_metrics = parse_box_table_metrics(sections.get('Request Metrics', []))
 
     metrics: Dict[str, str] = {}
-    detailed_keys = [
+    metrics.update(detailed_metrics)
+    if 'Num' in request_metrics:
+        request_metrics['Num Reqs'] = request_metrics.pop('Num')
+    for key, value in request_metrics.items():
+        metrics.setdefault(key, value)
+
+    required_keys = [
         'Conc.',
-        'Rate',
         'RPS',
         'Avg Lat.(s)',
         'P99 Lat.(s)',
@@ -424,20 +444,18 @@ def parse_metric_rows(summary_path: Path) -> Dict[str, str]:
         'P99 TPOT(s)',
         'Gen. toks/s',
         'Success Rate',
-    ]
-    request_keys = [
-        'Conc.',
         'Num Reqs',
         'Avg In Toks',
         'P99 In Toks',
         'Avg Out Toks',
         'P99 Out Toks',
     ]
-
-    for key, value in zip(detailed_keys, detailed):
-        metrics[key] = value
-    for key, value in zip(request_keys, request):
-        metrics.setdefault(key, value)
+    missing = [key for key in required_keys if key not in metrics]
+    if missing:
+        print(
+            f'Warning: missing metric columns in {summary_path}: {", ".join(missing)}',
+            file=sys.stderr,
+        )
     return metrics
 
 
@@ -481,6 +499,14 @@ def generate_combined_report(output_root: Path, model: str, url: str, summaries:
         'P99 In Toks',
         'Avg Out Toks',
         'P99 Out Toks',
+        'Avg Turns/Req',
+        'Approx Cache Hit',
+        'Decoded Tok/Iter',
+        'Spec. Accept Rate',
+    ]
+    request_metric_names = [
+        name for name in request_metric_names
+        if name in text_metrics or name in vl_metrics or name == 'Num Reqs'
     ]
 
     def row(metric_name: str) -> List[str]:
