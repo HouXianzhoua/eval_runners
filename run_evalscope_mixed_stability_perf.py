@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import datetime as dt
 import importlib.util
 import json
@@ -733,27 +734,22 @@ async def run_continuous_lane(lane: str, args: argparse.Namespace, output_root: 
     return ContinuousLaneResult(run_dir=run_dir, db_path=db_path, records=records)
 
 
-def split_warmup_requests(total_requests: int) -> Tuple[int, int]:
-    if total_requests <= 0:
-        return 0, 0
-    vl_requests = max(1, total_requests * 3 // 8) if total_requests > 1 else 0
-    text_requests = total_requests - vl_requests
-    return vl_requests, text_requests
-
-
-async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path, request_count: int) -> WarmupLaneResult:
+async def run_warmup_lane(
+    lane: str,
+    args: argparse.Namespace,
+    output_root: Path,
+    target_seconds: float,
+) -> WarmupLaneResult:
     ensure_evalscope_importable()
     from evalscope.perf.http_client import AioHttpClient, test_connection
     from evalscope.perf.plugin import ApiRegistry
 
-    if request_count <= 0:
+    if target_seconds <= 0:
         return WarmupLaneResult(lane=lane, total_requests=0, success_requests=0, failed_requests=0, duration_seconds=0.0)
 
     run_dir = output_root / 'warmup' / lane
     run_dir.mkdir(parents=True, exist_ok=True)
     lane_args = build_evalscope_lane_args(args, lane, run_dir)
-    lane_args.number = max(int(request_count), 1)
-    lane_args.parallel = min(int(lane_args.parallel), int(request_count))
     api_plugin = ApiRegistry.get_class(lane_args.api)(lane_args)
 
     if not lane_args.no_test_connection:
@@ -762,40 +758,89 @@ async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path
             raise TimeoutError(f'{lane} warmup connection test failed')
 
     requests = build_request_pool(lane_args, api_plugin)
-    semaphore = asyncio.Semaphore(lane_args.parallel)
-
-    async def post_request(client, request):
-        async with semaphore:
-            benchmark_data = await client.post(request)
-        return benchmark_data
-
-    started_at = time.time()
-    client = AioHttpClient(lane_args, api_plugin)
-    async with client:
-        tasks = [
-            asyncio.create_task(post_request(client, requests[index % len(requests)]))
-            for index in range(request_count)
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
+    scheduled = 0
     success = 0
     failed = 0
-    for result in results:
-        if isinstance(result, Exception):
-            failed += 1
-        elif getattr(result, 'success', False):
-            success += 1
-        else:
-            failed += 1
+    request_index = 0
+    schedule_lock = asyncio.Lock()
+    counts_lock = asyncio.Lock()
+    started_at = time.time()
+    deadline = started_at + target_seconds
+    next_request_time = started_at
+
+    async def progress_reporter():
+        interval = max(args.warmup_log_interval_seconds, 1.0)
+        while time.time() < deadline:
+            await asyncio.sleep(min(interval, max(deadline - time.time(), 0.0)))
+            elapsed = time.time() - started_at
+            print(
+                f'[warmup:{lane}] progress elapsed={format_duration(elapsed)}/'
+                f'{format_duration(target_seconds)}, scheduled={scheduled}, '
+                f'completed={success + failed}, success={success}, failed={failed}',
+                flush=True,
+            )
+
+    async def worker(worker_index: int, client):
+        nonlocal scheduled, success, failed, request_index, next_request_time
+        while time.time() < deadline:
+            async with schedule_lock:
+                if time.time() >= deadline:
+                    break
+                if lane_args.rate != -1:
+                    wait_seconds = max(0.0, next_request_time - time.time())
+                    if wait_seconds > 0:
+                        await asyncio.sleep(wait_seconds)
+                    if time.time() >= deadline:
+                        break
+                    next_request_time = time.time() + random.expovariate(lane_args.rate)
+                request = requests[request_index % len(requests)]
+                request_index += 1
+                scheduled += 1
+
+            remaining = (deadline + args.request_timeout) - time.time()
+            if remaining <= 0:
+                break
+            request_timeout = min(remaining, args.request_timeout)
+            try:
+                benchmark_data = await asyncio.wait_for(client.post(request), timeout=request_timeout)
+                ok = bool(getattr(benchmark_data, 'success', False))
+            except Exception as exc:
+                print(f'[warmup:{lane}] worker-{worker_index} request error: {exc}', flush=True)
+                ok = False
+
+            async with counts_lock:
+                if ok:
+                    success += 1
+                else:
+                    failed += 1
+
+    client = AioHttpClient(lane_args, api_plugin)
+    async with client:
+        progress_task = asyncio.create_task(progress_reporter())
+        worker_tasks = [
+            asyncio.create_task(worker(index, client))
+            for index in range(lane_args.parallel)
+        ]
+        try:
+            results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+            failures = [result for result in results if isinstance(result, Exception)]
+            if failures:
+                raise RuntimeError(f'{lane} warmup worker failures: {failures[:3]}')
+        finally:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
+
     duration = time.time() - started_at
     print(
-        f'[warmup:{lane}] requests={request_count}, success={success}, failed={failed}, '
+        f'[warmup:{lane}] target={format_duration(target_seconds)}, scheduled={scheduled}, '
+        f'success={success}, failed={failed}, '
         f'duration={format_duration(duration)}',
         flush=True,
     )
     return WarmupLaneResult(
         lane=lane,
-        total_requests=request_count,
+        total_requests=scheduled,
         success_requests=success,
         failed_requests=failed,
         duration_seconds=duration,
@@ -803,20 +848,21 @@ async def run_warmup_lane(lane: str, args: argparse.Namespace, output_root: Path
 
 
 async def run_warmup(args: argparse.Namespace, output_root: Path) -> None:
-    warmup_requests = args.warmup_requests
-    if warmup_requests <= 0:
-        print('[warmup] skipped because --warmup-requests <= 0', flush=True)
+    if args.warmup_requests == 0 or args.warmup_minutes <= 0:
+        print('[warmup] skipped because warmup duration is <= 0', flush=True)
         return
+    if args.warmup_requests is not None:
+        print('[warmup] --warmup-requests is deprecated; warmup now runs by duration', flush=True)
 
-    vl_requests, text_requests = split_warmup_requests(warmup_requests)
+    target_seconds = args.warmup_minutes * 60.0
     print(
-        f'[warmup] start: total={warmup_requests}, VL={vl_requests}, TEXT={text_requests}; '
+        f'[warmup] start: target={format_duration(target_seconds)}, VL rate={args.vl_rate}, TEXT rate={args.text_rate}; '
         'warmup only prints logs and does not generate reports',
         flush=True,
     )
     started_at = time.time()
-    vl_task = asyncio.create_task(run_warmup_lane('vl', args, output_root, vl_requests))
-    text_task = asyncio.create_task(run_warmup_lane('text', args, output_root, text_requests))
+    vl_task = asyncio.create_task(run_warmup_lane('vl', args, output_root, target_seconds))
+    text_task = asyncio.create_task(run_warmup_lane('text', args, output_root, target_seconds))
     results = await asyncio.gather(vl_task, text_task)
     total = sum(result.total_requests for result in results)
     success = sum(result.success_requests for result in results)
@@ -940,8 +986,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--warmup-requests',
         type=int,
-        default=100,
-        help='Total warmup requests before the stability run. Set 0 to skip. Default 100.',
+        default=None,
+        help='Deprecated. Warmup now runs by duration; set 0 to skip warmup.',
+    )
+    parser.add_argument(
+        '--warmup-minutes',
+        type=float,
+        default=None,
+        help='Warmup duration before the stability run. Defaults to --window-minutes. Set 0 to skip.',
+    )
+    parser.add_argument(
+        '--warmup-log-interval-seconds',
+        type=float,
+        default=30.0,
+        help='Progress log interval during warmup. Default 30 seconds.',
     )
 
     parser.add_argument(
@@ -992,8 +1050,14 @@ def parse_args() -> argparse.Namespace:
         parser.error('--duration-minutes must be > 0')
     if args.window_minutes <= 0:
         parser.error('--window-minutes must be > 0')
-    if args.warmup_requests < 0:
+    if args.warmup_requests is not None and args.warmup_requests < 0:
         parser.error('--warmup-requests must be >= 0')
+    if args.warmup_minutes is None:
+        args.warmup_minutes = args.window_minutes
+    if args.warmup_minutes < 0:
+        parser.error('--warmup-minutes must be >= 0')
+    if args.warmup_log_interval_seconds <= 0:
+        parser.error('--warmup-log-interval-seconds must be > 0')
     if args.request_timeout <= 0:
         parser.error('--request-timeout must be > 0')
     if args.queue_put_timeout <= 0:
@@ -1049,6 +1113,8 @@ def main() -> int:
         'api': args.api,
         'target_duration_minutes': args.duration_minutes,
         'window_minutes': args.window_minutes,
+        'warmup_minutes': args.warmup_minutes,
+        'warmup_log_interval_seconds': args.warmup_log_interval_seconds,
         'execution_mode': 'continuous',
         'summary_count': time_window_analysis['window_count'],
         'vl_config': {
